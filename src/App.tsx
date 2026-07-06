@@ -8,10 +8,93 @@ import Header from './components/Header';
 import Sidebar from './components/Sidebar';
 import InteractiveMap from './components/InteractiveMap';
 import DataPanel from './components/DataPanel';
+import WorkspaceHub from './components/WorkspaceHub';
+import MapCalibrationPanel from './components/MapCalibrationPanel';
 import { mockProvincesData } from './data/mockData';
 import { MetricType, ProvinceData } from './types';
 
+const defaultWorldMapData: ProvinceData = {
+  id: 'WORLD_MAP',
+  name: 'Mapa Mundial',
+  abbreviation: 'MUNDO',
+  economicProfile: {
+    gini: 38.5,
+    pib: 'USD 96T',
+    averageSalary: 'USD 1,200',
+    sectors: [
+      { name: 'Servicios', value: 65, color: '#10b981' },
+      { name: 'Industria', value: 25, color: '#3b82f6' },
+      { name: 'Agro', value: 10, color: '#f59e0b' }
+    ]
+  },
+  socialEmployment: { pobreza: 21.5, desempleo: 6.2, informalEmployment: 35.0, youthInformality: 48.0 },
+  incomeStructure: {
+    minimumSalary: [{ label: 'Promedio', value: 850 }, { label: 'Mínimo', value: 350 }],
+    genderGap: [{ label: 'Hombres', value: 100 }, { label: 'Mujeres', value: 82 }]
+  },
+  connectivity: {
+    internetAccess: [{ label: 'Fijo', value: 68 }, { label: 'Móvil', value: 85 }, { label: 'Global', value: 66 }],
+    mobileLines: [{ label: '4G', value: 75 }, { label: '5G', value: 25 }]
+  },
+  budgetSpending: {
+    socialSpending: [
+      { name: 'Salud', value: 40, color: '#10b981' },
+      { name: 'Educación', value: 45, color: '#3b82f6' },
+      { name: 'Otros', value: 15, color: '#f59e0b' }
+    ],
+    educationInvestment: [{ label: 'Promedio', value: 4.5 }]
+  },
+  mobilityServices: { roadNetwork: 'Red Vial Global', waterAccess: 88, publicTransportLines: 1250 },
+  municipalities: [
+    { id: 'world_ar', name: 'Argentina (Mundo)', value: 42, percentage: 15, d: 'M 350,380 c -10,-10 -5,-25 -12,-35 c -15,-20 15,-40 25,-10 c 5,15 -3,35 -13,45 z' },
+    { id: 'world_br', name: 'Brasil', value: 28, percentage: 32, d: 'M 400,340 c 15,-15 40,-5 50,15 c -10,25 -35,20 -50,-15 z' },
+    { id: 'world_us', name: 'Estados Unidos', value: 11, percentage: 38, d: 'M 250,220 c 25,-15 50,5 60,25 c -20,20 -45,10 -60,-25 z' },
+    { id: 'world_eu', name: 'Unión Europea', value: 20, percentage: 15, d: 'M 580,210 c 20,0 20,30 0,30 c -20,0 -20,-30 0,-30 z' }
+  ]
+};
+
+const defaultContinentMapData: ProvinceData = {
+  id: 'CONTINENT_MAP',
+  name: 'América del Sur',
+  abbreviation: 'S.AMERICA',
+  economicProfile: {
+    gini: 46.2,
+    pib: 'USD 3.8T',
+    averageSalary: 'USD 450',
+    sectors: [
+      { name: 'Servicios', value: 55, color: '#10b981' },
+      { name: 'Industria', value: 20, color: '#3b82f6' },
+      { name: 'Agro / Minería', value: 25, color: '#f59e0b' }
+    ]
+  },
+  socialEmployment: { pobreza: 31.8, desempleo: 8.1, informalEmployment: 52.0, youthInformality: 65.0 },
+  incomeStructure: {
+    minimumSalary: [{ label: 'Promedio', value: 380 }, { label: 'Mínimo', value: 220 }],
+    genderGap: [{ label: 'Hombres', value: 100 }, { label: 'Mujeres', value: 76 }]
+  },
+  connectivity: {
+    internetAccess: [{ label: 'Fijo', value: 52 }, { label: 'Móvil', value: 78 }, { label: 'Global', value: 54 }],
+    mobileLines: [{ label: '4G', value: 85 }, { label: '5G', value: 15 }]
+  },
+  budgetSpending: {
+    socialSpending: [
+      { name: 'Salud', value: 35, color: '#10b981' },
+      { name: 'Educación', value: 40, color: '#3b82f6' },
+      { name: 'Otros', value: 25, color: '#f59e0b' }
+    ],
+    educationInvestment: [{ label: 'Promedio', value: 3.8 }]
+  },
+  mobilityServices: { roadNetwork: 'Vía Panamericana', waterAccess: 76, publicTransportLines: 480 },
+  municipalities: [
+    { id: 'cont_ar', name: 'Argentina (S.A.)', value: 42, percentage: 32, d: 'M 350,600 c -10,-20 -20,-40 -25,-60 c 15,-15 35,10 45,30 c -10,15 -15,20 -20,30 z' },
+    { id: 'cont_br', name: 'Brasil (S.A.)', value: 28, percentage: 48, d: 'M 450,450 c 25,-20 50,0 60,30 c -20,30 -50,10 -60,-30 z' },
+    { id: 'cont_cl', name: 'Chile (S.A.)', value: 10, percentage: 12, d: 'M 320,650 c -5,-30 -10,-60 -15,-90 c 5,5 10,30 15,90 z' },
+    { id: 'cont_uy', name: 'Uruguay (S.A.)', value: 9, percentage: 8, d: 'M 400,580 c 5,5 10,5 12,0 c -2,-5 -10,-5 -12,0 z' }
+  ]
+};
+
 export default function App() {
+  const [activeTab, setActiveTab] = useState<'dashboard' | 'calibration'>('dashboard');
   // Manejar el estado dinámico de todas las provincias (con persistencia local)
   const [provincesData, setProvincesData] = useState<Record<string, ProvinceData>>(() => {
     const saved = localStorage.getItem('argentina_data_custom_provinces');
@@ -48,9 +131,22 @@ export default function App() {
   // Clave seleccionada (e.g. "AR-B")
   const [selectedProvinceId, setSelectedProvinceId] = useState<string>('AR-B');
   const [selectedMetric, setSelectedMetric] = useState<MetricType>('pobreza');
+  const [activeMapLevel, setActiveMapLevel] = useState<'world' | 'continent' | 'country' | 'municipality'>('country');
+
+  const activeProvinceId = 
+    activeMapLevel === 'world' ? 'WORLD_MAP' :
+    activeMapLevel === 'continent' ? 'CONTINENT_MAP' :
+    selectedProvinceId;
 
   // Recuperar el objeto de provincia activo de nuestro estado dinámico
-  const selectedProvince = provincesData[selectedProvinceId] || mockProvincesData[selectedProvinceId] || mockProvincesData['AR-B'];
+  const selectedProvince = 
+    activeProvinceId === 'WORLD_MAP' ? (provincesData['WORLD_MAP'] || defaultWorldMapData) :
+    activeProvinceId === 'CONTINENT_MAP' ? (provincesData['CONTINENT_MAP'] || defaultContinentMapData) :
+    (provincesData[selectedProvinceId] || mockProvincesData[selectedProvinceId] || mockProvincesData['AR-B']);
+
+  const handleMapLevelChange = (level: 'world' | 'continent' | 'country' | 'municipality') => {
+    setActiveMapLevel(level);
+  };
 
   // Callback para actualizar cualquier provincia en caliente y persistirla
   const handleUpdateProvince = (updatedProvince: ProvinceData) => {
@@ -59,6 +155,11 @@ export default function App() {
       localStorage.setItem('argentina_data_custom_provinces', JSON.stringify(next));
       return next;
     });
+  };
+
+  const handleLoadAllProvinces = (loaded: Record<string, ProvinceData>) => {
+    setProvincesData(loaded);
+    localStorage.setItem('argentina_data_custom_provinces', JSON.stringify(loaded));
   };
 
   return (
@@ -72,16 +173,74 @@ export default function App() {
         <main className="w-full lg:w-[42%] p-4 xl:p-6 overflow-y-auto border-b lg:border-b-0 lg:border-r border-slate-800 flex flex-col space-y-4">
           <InteractiveMap
             selectedProvince={selectedProvince}
-            onSelectProvince={(prov) => setSelectedProvinceId(prov.id)}
+            onSelectProvince={(prov) => {
+              setSelectedProvinceId(prov.id);
+              localStorage.setItem('argentina_selected_province_id', prov.id);
+            }}
             onUpdateProvince={handleUpdateProvince}
             selectedMetric={selectedMetric}
             onChangeMetric={setSelectedMetric}
+            activeMapLevel={activeMapLevel}
+            setActiveMapLevel={handleMapLevelChange}
           />
         </main>
 
         {/* Panel Derecho: Visualizador de Datos */}
-        <section className="flex-1 p-4 xl:p-6 overflow-y-auto bg-slate-950">
-          <DataPanel province={selectedProvince} />
+        <section className="flex-1 p-4 xl:p-6 overflow-y-auto bg-slate-950 flex flex-col space-y-5">
+          {/* Barra de Pestañas de Navegación de Panel Derecho */}
+          <div className="flex border-b border-slate-800 space-x-2">
+            <button
+              onClick={() => setActiveTab('dashboard')}
+              className={`pb-2.5 px-4 font-bold text-xs uppercase tracking-wider transition-all cursor-pointer border-b-2 ${
+                activeTab === 'dashboard'
+                  ? 'border-emerald-500 text-emerald-400 font-black'
+                  : 'border-transparent text-slate-500 hover:text-slate-300'
+              }`}
+            >
+              📈 Estadísticas y Workspace
+            </button>
+            <button
+              onClick={() => setActiveTab('calibration')}
+              className={`pb-2.5 px-4 font-bold text-xs uppercase tracking-wider transition-all cursor-pointer border-b-2 ${
+                activeTab === 'calibration'
+                  ? 'border-emerald-500 text-emerald-400 font-black'
+                  : 'border-transparent text-slate-500 hover:text-slate-300'
+              }`}
+            >
+              🛠️ Calibrador de Mapas SVG (Admin)
+            </button>
+          </div>
+
+          {activeTab === 'dashboard' ? (
+            <div className="space-y-6">
+              <DataPanel province={selectedProvince} />
+              
+              <div className="border-t border-slate-900 pt-6">
+                <WorkspaceHub
+                  selectedProvince={selectedProvince}
+                  onUpdateProvince={handleUpdateProvince}
+                  allProvinces={provincesData}
+                  onLoadAllProvinces={handleLoadAllProvinces}
+                />
+              </div>
+            </div>
+          ) : (
+            <MapCalibrationPanel 
+              selectedProvinceId={activeProvinceId}
+              onSelectProvinceId={(id) => {
+                if (id === 'WORLD_MAP') {
+                  handleMapLevelChange('world');
+                } else if (id === 'CONTINENT_MAP') {
+                  handleMapLevelChange('continent');
+                } else {
+                  setSelectedProvinceId(id);
+                  localStorage.setItem('argentina_selected_province_id', id);
+                }
+              }}
+              selectedProvince={selectedProvince}
+              onUpdateProvince={handleUpdateProvince}
+            />
+          )}
         </section>
 
         {/* Barra Lateral Derecha: Acciones Rápidas */}
