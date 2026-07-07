@@ -33,6 +33,8 @@ interface MapCalibrationPanelProps {
   onSelectProvinceId?: (id: string) => void;
   selectedProvince?: ProvinceData;
   onUpdateProvince?: (province: ProvinceData) => void;
+  mapLevels?: { id: string; name: string }[];
+  onUpdateMapLevels?: (levels: { id: string; name: string }[]) => void;
 }
 
 // ==========================================
@@ -290,7 +292,9 @@ export default function MapCalibrationPanel({
   selectedProvinceId = 'AR-B', 
   onSelectProvinceId,
   selectedProvince,
-  onUpdateProvince
+  onUpdateProvince,
+  mapLevels = [],
+  onUpdateMapLevels
 }: MapCalibrationPanelProps) {
   // Referencias de elementos del DOM
   const containerRef = useRef<HTMLDivElement>(null);
@@ -2165,6 +2169,109 @@ export default function MapCalibrationPanel({
     showNotification('Municipio eliminado con éxito.', 'success');
   };
 
+  const [lvlName, setLvlName] = useState('');
+  const [lvlId, setLvlId] = useState('');
+
+  // --- Gestor Administrativo de Niveles de Mapas (Mundo > Continente > País > Provincia > Ciudad > Barrio, etc.) ---
+  const renderMapLevelsManager = () => {
+    const handleAddLevel = () => {
+      if (!lvlName.trim() || !lvlId.trim()) {
+        showNotification('Por favor, ingresa el nombre y el ID para el nuevo nivel.', 'error');
+        return;
+      }
+      const cleanedId = lvlId.trim().toLowerCase().replace(/\s+/g, '_');
+      if (mapLevels.some(l => l.id === cleanedId)) {
+        showNotification('Ya existe un nivel de mapa con ese ID de calibración.', 'error');
+        return;
+      }
+      const updated = [...mapLevels, { id: cleanedId, name: lvlName.trim() }];
+      if (onUpdateMapLevels) {
+        onUpdateMapLevels(updated);
+      }
+      setLvlName('');
+      setLvlId('');
+      showNotification(`Nivel "${lvlName}" agregado con éxito.`, 'success');
+    };
+
+    const handleDeleteLevel = (id: string) => {
+      if (['world', 'continent', 'country', 'province', 'city', 'neighborhood'].includes(id)) {
+        showNotification('No puedes eliminar los niveles esenciales definidos por el sistema.', 'error');
+        return;
+      }
+      const updated = mapLevels.filter(l => l.id !== id);
+      if (onUpdateMapLevels) {
+        onUpdateMapLevels(updated);
+      }
+      showNotification('Nivel de mapa eliminado correctamente.', 'success');
+    };
+
+    return (
+      <div className="bg-slate-950 p-4 rounded-xl border border-slate-850 space-y-3 pt-3 border-t-2 border-dashed border-slate-800">
+        <h4 className="text-[10px] font-black text-slate-400 uppercase tracking-widest flex items-center justify-between">
+          <span>⚙️ Gestor de Alcances / Jerarquías</span>
+          <span className="text-emerald-400">ADMIN</span>
+        </h4>
+        <p className="text-[9px] text-slate-500 leading-normal">
+          Administra los alcances del mapa interactivo (Mundo &gt; Continente &gt; Nación &gt; Provincia &gt; Ciudad &gt; Barrio). Agrega niveles personalizados para expandir la jerarquía.
+        </p>
+
+        <div className="space-y-1.5 max-h-32 overflow-y-auto pr-1">
+          {mapLevels.map((lvl) => {
+            const isSystem = ['world', 'continent', 'country', 'province', 'city', 'neighborhood'].includes(lvl.id);
+            return (
+              <div key={lvl.id} className="flex items-center justify-between bg-slate-900/50 p-1.5 rounded border border-slate-850 text-[10px]">
+                <div className="flex items-center space-x-1.5 min-w-0">
+                  <span className="text-slate-400 font-bold">{lvl.name}</span>
+                  <span className="text-slate-600 font-mono text-[8px]">({lvl.id})</span>
+                </div>
+                {!isSystem ? (
+                  <button
+                    onClick={() => handleDeleteLevel(lvl.id)}
+                    className="text-slate-500 hover:text-red-400 p-0.5 transition-colors cursor-pointer"
+                    title="Eliminar nivel"
+                  >
+                    <Trash2 size={10} />
+                  </button>
+                ) : (
+                  <span className="text-[7px] text-slate-600 bg-slate-950 px-1.5 py-0.2 rounded font-bold uppercase">Sistema</span>
+                )}
+              </div>
+            );
+          })}
+        </div>
+
+        <div className="grid grid-cols-2 gap-1.5">
+          <input
+            type="text"
+            value={lvlName}
+            onChange={(e) => {
+              setLvlName(e.target.value);
+              if (!lvlId) {
+                setLvlId(e.target.value.toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "").replace(/[^a-z0-9]/g, "_"));
+              }
+            }}
+            placeholder="Nombre (ej: Calles)"
+            className="bg-slate-900 border border-slate-800 rounded p-1.5 text-[10px] text-slate-200 outline-none focus:border-emerald-500"
+          />
+          <input
+            type="text"
+            value={lvlId}
+            onChange={(e) => setLvlId(e.target.value)}
+            placeholder="ID (ej: streets)"
+            className="bg-slate-900 border border-slate-800 rounded p-1.5 text-[10px] text-slate-200 outline-none focus:border-emerald-500"
+          />
+        </div>
+
+        <button
+          onClick={handleAddLevel}
+          className="w-full py-1.5 bg-slate-900 hover:bg-slate-800 text-emerald-400 border border-slate-850 hover:border-slate-700 rounded text-[9px] font-bold uppercase cursor-pointer transition-colors"
+        >
+          + Agregar Nivel Personalizado
+        </button>
+      </div>
+    );
+  };
+
   const renderSimplifiedSidebar = () => {
     if (selectedProvince) {
       return (
@@ -2327,6 +2434,9 @@ export default function MapCalibrationPanel({
             <Check size={16} />
             <span>GUARDAR CAMBIOS DE CALIBRACIÓN</span>
           </button>
+
+          {/* Gestor de niveles y jerarquías dinámicas de mapas */}
+          {renderMapLevelsManager()}
         </div>
       );
     }
@@ -2393,6 +2503,9 @@ export default function MapCalibrationPanel({
             Ir a Herramientas Avanzadas JSON
           </button>
         </div>
+
+        {/* Gestor de niveles y jerarquías dinámicas de mapas */}
+        {renderMapLevelsManager()}
       </div>
     );
   };
@@ -2461,71 +2574,9 @@ export default function MapCalibrationPanel({
         <div className="lg:col-span-7 p-6 bg-slate-950/40 flex flex-col border-b lg:border-b-0 lg:border-r border-slate-850">
           
           {/* BARRA SUPERIOR DE SELECCIÓN DE PANTALLA / MODOS DE TRABAJO */}
-          <div className="w-full bg-slate-950 p-1.5 rounded-lg border border-slate-850 flex flex-wrap gap-1.5 items-center justify-between mb-4 shadow-inner">
-            <div className="flex space-x-1.5">
-              <button
-                onClick={() => {
-                  setViewMode('nation');
-                  setCalibrationLevel('provinces');
-                  setIsNodeEditing(false);
-                  showNotification('Lienzo en Modo País-Nación (Completo)', 'info');
-                }}
-                className={`px-3 py-1.5 rounded-md text-[10px] font-black uppercase tracking-wider transition-all flex items-center space-x-1.5 border ${
-                  viewMode === 'nation'
-                    ? 'bg-emerald-500/10 border-emerald-500/40 text-emerald-400'
-                    : 'bg-slate-900/50 border-transparent text-slate-400 hover:text-slate-200 hover:bg-slate-850'
-                }`}
-                title="Muestra el mapa completo del país en la pantalla grande"
-              >
-                <span>🗺️</span>
-                <span>País - Nación</span>
-              </button>
-              
-              <button
-                onClick={() => {
-                  if (!selectedProvinceId) {
-                    showNotification('Selecciona primero una provincia/isla para ver su enfoque detallado.', 'error');
-                    return;
-                  }
-                  setViewMode('province');
-                  setCalibrationLevel('provinces');
-                  setIsNodeEditing(false);
-                  showNotification(`Enfoque de Provincia: ${getPieceName(selectedProvinceId)} (Municipios en lienzo chico)`, 'info');
-                }}
-                className={`px-3 py-1.5 rounded-md text-[10px] font-black uppercase tracking-wider transition-all flex items-center space-x-1.5 border ${
-                  viewMode === 'province'
-                    ? 'bg-sky-500/10 border-sky-500/40 text-sky-400'
-                    : 'bg-slate-900/50 border-transparent text-slate-400 hover:text-slate-200 hover:bg-slate-850'
-                }`}
-                title="Aísla la provincia elegida en grande y muestra sus subdivisiones en chiquito"
-              >
-                <span>👁️</span>
-                <span>Isolar Provincia</span>
-              </button>
-              
-              <button
-                onClick={() => {
-                  if (!selectedProvinceId) {
-                    showNotification('Por favor, selecciona una provincia primero.', 'error');
-                    return;
-                  }
-                  setViewMode('subdivision');
-                  setCalibrationLevel('subdivisions');
-                  setIsNodeEditing(true);
-                  showNotification('Modo de Edición de Vértices y Nodos activo en el lienzo', 'info');
-                }}
-                className={`px-3 py-1.5 rounded-md text-[10px] font-black uppercase tracking-wider transition-all flex items-center space-x-1.5 border ${
-                  viewMode === 'subdivision'
-                    ? 'bg-amber-500/10 border-amber-500/40 text-amber-400'
-                    : 'bg-slate-900/50 border-transparent text-slate-400 hover:text-slate-200 hover:bg-slate-850'
-                }`}
-                title="Muestra el municipio/isla seleccionada en la pantalla grande con editor de nodos"
-              >
-                <span>🔬</span>
-                <span>Ajustar Municipio</span>
-              </button>
-            </div>
-            
+          {/* Se eliminaron los botones horizontales de navegación superior (PAÍS - NACIÓN, ISOLAR PROVINCIA, AJUSTAR MUNICIPIO) que el usuario tachó con cruces rojas */}
+          {/* Conservamos la estructura del contenedor para no alterar el layout y permitir controles del editor de nodos */}
+          <div className="w-full bg-slate-950 p-1.5 rounded-lg border border-slate-850 flex flex-wrap gap-1.5 items-center justify-end mb-4 shadow-inner">
             <div className="flex items-center space-x-1.5">
               {viewMode !== 'nation' && (
                 <button
@@ -2811,31 +2862,8 @@ export default function MapCalibrationPanel({
         {/* COLUMNA PANEL DE AJUSTES Y CONTROLES (5 columnas) */}
         <div className="lg:col-span-5 p-6 flex flex-col space-y-6 bg-slate-900/40">
           
-          {/* BANNER DE TOGGLE DE MODO */}
-          <div className="bg-slate-950 p-3 rounded-lg border border-slate-850 flex items-center justify-between">
-            <div className="flex flex-col">
-              <span className="text-[11px] font-black text-slate-300 uppercase tracking-wider">
-                Workspace {isSimplifiedMode ? 'Simplificado' : 'Avanzado'}
-              </span>
-              <span className="text-[9px] text-slate-500 font-medium">
-                {isSimplifiedMode ? 'Enfocado en la pieza seleccionada' : 'Todas las herramientas técnicas activas'}
-              </span>
-            </div>
-            <button
-              onClick={() => {
-                setIsSimplifiedMode(!isSimplifiedMode);
-                showNotification(isSimplifiedMode ? 'Modo avanzado activado' : 'Modo simplificado activado', 'info');
-              }}
-              className={`px-2.5 py-1.5 rounded text-[9px] font-black uppercase tracking-wider border transition-all cursor-pointer ${
-                isSimplifiedMode
-                  ? 'bg-emerald-500/10 border-emerald-500 text-emerald-400 hover:bg-emerald-500/20'
-                  : 'bg-slate-900 border-slate-850 text-slate-400 hover:text-slate-200'
-              }`}
-            >
-              {isSimplifiedMode ? 'Ver Avanzado' : 'Ver Simplificado'}
-            </button>
-          </div>
-
+          {/* Se eliminó la tarjeta visual de BANNER DE TOGGLE DE MODO (Workspace Simplificado/Avanzado) tachada por el usuario */}
+          {/* Por defecto, mantenemos el Sidebar Simplificado y Enfocado para una experiencia limpia */}
           {isSimplifiedMode ? (
             renderSimplifiedSidebar()
           ) : (

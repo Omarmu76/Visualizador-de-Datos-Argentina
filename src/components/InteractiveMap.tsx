@@ -66,8 +66,11 @@ interface InteractiveMapProps {
   onUpdateProvince: (province: ProvinceData) => void;
   selectedMetric: MetricType;
   onChangeMetric: (metric: MetricType) => void;
-  activeMapLevel: 'world' | 'continent' | 'country' | 'municipality';
-  setActiveMapLevel: (level: 'world' | 'continent' | 'country' | 'municipality') => void;
+  activeMapLevel: string;
+  setActiveMapLevel: (level: string) => void;
+  mapLevels: { id: string; name: string }[];
+  selectedSubdivisionId: string | null;
+  setSelectedSubdivisionId: (id: string | null) => void;
 }
 
 export default function InteractiveMap({
@@ -77,7 +80,10 @@ export default function InteractiveMap({
   selectedMetric,
   onChangeMetric,
   activeMapLevel,
-  setActiveMapLevel
+  setActiveMapLevel,
+  mapLevels,
+  selectedSubdivisionId,
+  setSelectedSubdivisionId
 }: InteractiveMapProps) {
   const [hoveredProv, setHoveredProv] = useState<string | null>(null);
   const [zoomLevel, setZoomLevel] = useState(1);
@@ -88,7 +94,6 @@ export default function InteractiveMap({
   const [showManager, setShowManager] = useState(false);
   const [managerTab, setManagerTab] = useState<'import' | 'palette' | 'divisions'>('import');
   const [importText, setImportText] = useState('');
-  const [selectedSubdivisionId, setSelectedSubdivisionId] = useState<string | null>(null);
 
   // Input states for editing individual subdivisions
   const [editSubName, setEditSubName] = useState('');
@@ -337,13 +342,23 @@ export default function InteractiveMap({
           <select
             id="map-level-select"
             value={activeMapLevel}
-            onChange={(e) => setActiveMapLevel(e.target.value as any)}
+            onChange={(e) => {
+              setActiveMapLevel(e.target.value);
+              setSelectedSubdivisionId(null);
+            }}
             className="w-full bg-slate-950 border border-slate-800 text-slate-200 text-xs font-bold rounded p-1.5 outline-none transition-all focus:border-emerald-500 cursor-pointer text-emerald-400"
           >
-            <option value="world">🌎 Mundo</option>
-            <option value="continent">🗺️ Continente</option>
-            <option value="country">🇦🇷 País (Nación)</option>
-            <option value="municipality">📍 Municipio (Zoom)</option>
+            {mapLevels.map(level => (
+              <option key={level.id} value={level.id}>
+                {level.id === 'world' ? '🌎 ' :
+                 level.id === 'continent' ? '🗺️ ' :
+                 level.id === 'country' ? '🇦🇷 ' :
+                 level.id === 'province' ? '🏢 ' :
+                 level.id === 'city' ? '📍 ' :
+                 level.id === 'neighborhood' ? '🏘️ ' : '💠 '}
+                {level.name}
+              </option>
+            ))}
           </select>
           <div className="flex items-center space-x-1.5 text-[8.5px] text-slate-400 mt-1">
             <span className="w-1.5 h-1.5 bg-emerald-400 rounded-full" />
@@ -357,7 +372,7 @@ export default function InteractiveMap({
           viewBox={
             activeMapLevel === 'world' ? "0 0 1024 512" :
             activeMapLevel === 'continent' ? "0 0 800 1000" :
-            activeMapLevel === 'country' ? "260 -2 440 964" :
+            (activeMapLevel === 'country' || activeMapLevel === 'pais') ? "260 -2 440 964" :
             (() => {
               const selectedProvincePath = activeProvincePaths.find(p => p.id === selectedProvince.id)?.d || '';
               const bbox = getPathBBox(selectedProvincePath);
@@ -457,41 +472,45 @@ export default function InteractiveMap({
                 />
               )}
 
-              {selectedProvince.municipalities.map((muni) => {
-                if (muni.paused) return null;
-                const dPath = muni.d || activeProvincePaths.find(p => p.id === selectedProvince.id)?.d || '';
-                const isSelected = selectedSubdivisionId === muni.id;
-                const isHovered = hoveredMuni === muni.id;
-                const val = muni.value;
-                const fillHex = muni.color || getColorForValue(val, selectedMetric);
+              {selectedProvince.municipalities.map((muni) => { // Recorre el listado de municipios o subdivisiones del territorio activo
+                if (muni.paused) return null; // Si la subdivisión está desactivada/pausada, omite su renderizado
+                const dPath = muni.d || activeProvincePaths.find(p => p.id === selectedProvince.id)?.d || ''; // Obtiene las coordenadas SVG (path) o usa la silueta de respaldo
+                const isSelected = selectedSubdivisionId === muni.id; // Verifica si este polígono en específico está seleccionado por el usuario
+                const isHovered = hoveredMuni === muni.id; // Verifica si el puntero del mouse está flotando encima de este polígono
+                const val = muni.value; // Recupera el valor asignado de la métrica activa
+                
+                // --- RESOLUCIÓN DINÁMICA DE ESTILOS VISUALES ---
+                const fillHex = muni.visualStyles?.fillColor || muni.color || getColorForValue(val, selectedMetric); // Prioriza el color de relleno del inspector, luego el color plano, luego el gradiente de métricas
+                const strokeHex = isSelected ? '#f59e0b' : (muni.visualStyles?.strokeColor || '#334155'); // Usa color ámbar si está seleccionado, de lo contrario prioriza el color de borde del inspector o el color oscuro por defecto
+                const strokeW = isSelected ? 2.5 : (muni.visualStyles?.strokeWidth !== undefined ? muni.visualStyles.strokeWidth : 1.2); // Usa borde grueso de 2.5px si está seleccionado, de lo contrario el ancho del inspector o 1.2px
 
-                return (
+                return ( // Retorna el elemento vectorial del polígono
                   <path
-                    key={muni.id}
-                    d={dPath}
-                    fill={fillHex}
-                    stroke={isSelected ? '#f59e0b' : '#334155'}
-                    strokeWidth={isSelected ? 2.5 : 1.2}
-                    className="transition-all duration-150 cursor-pointer animate-fade-in"
-                    onClick={() => {
-                      setSelectedSubdivisionId(muni.id);
-                      setEditSubName(muni.name);
-                      setEditSubVal(muni.value);
-                      setEditSubPct(muni.percentage);
-                      if (!showManager) setShowManager(true);
-                      setManagerTab('palette');
+                    key={muni.id} // Clave única de reconciliación en React para optimizar el árbol virtual DOM
+                    d={dPath} // Asigna el conjunto de trazos y coordenadas geográficas
+                    fill={fillHex} // Aplica el color de relleno determinado por la resolución dinámica
+                    stroke={strokeHex} // Aplica el color de contorno determinado por la resolución dinámica
+                    strokeWidth={strokeW} // Aplica el espesor físico del trazo determinado
+                    className="transition-all duration-150 cursor-pointer animate-fade-in" // Clases de animación y transición suave de Tailwind
+                    onClick={() => { // Evento de clic para seleccionar e inspeccionar la subdivisión catastral
+                      setSelectedSubdivisionId(muni.id); // Almacena el ID del municipio seleccionado en el estado superior
+                      setEditSubName(muni.name); // Configura el nombre en el editor básico
+                      setEditSubVal(muni.value); // Configura el valor en el editor básico
+                      setEditSubPct(muni.percentage); // Configura el porcentaje provincial en el editor básico
+                      if (!showManager) setShowManager(true); // Abre el panel de administración lateral si estaba cerrado
+                      setManagerTab('palette'); // Se posiciona por defecto en la pestaña de edición de paletas o atributos
                     }}
-                    onMouseEnter={() => setHoveredMuni(muni.id)}
-                    onMouseLeave={() => setHoveredMuni(null)}
-                    style={{
+                    onMouseEnter={() => setHoveredMuni(muni.id)} // Activa el estado flotante (hover) al entrar con el mouse
+                    onMouseLeave={() => setHoveredMuni(null)} // Desactiva el estado flotante (hover) al salir con el mouse
+                    style={{ // Aplica sombras y efectos visuales nativos según el estado de interacción
                       filter: isSelected
-                        ? 'drop-shadow(0px 0px 8px #f59e0b)'
+                        ? 'drop-shadow(0px 0px 8px #f59e0b)' // Efecto de brillo ámbar si está seleccionado
                         : isHovered
-                        ? 'brightness(1.2)'
-                        : 'none',
+                        ? 'brightness(1.2)' // Brillo suave si se pasa el mouse por encima
+                        : 'none', // Sin filtros de color en estado normal
                     }}
                   />
-                );
+                ); // Fin del elemento path de la subdivisión catastral
               })}
             </g>
           )}
@@ -585,10 +604,17 @@ export default function InteractiveMap({
                       r="4.5"
                       className="fill-amber-400 stroke-slate-950 stroke-2"
                     />
-                    <foreignObject x={cx - 50} y={cy - 35} width="100" height="30">
-                      <div className="flex justify-center">
-                        <span className="bg-slate-950 text-[9px] text-amber-400 border border-amber-500/30 font-bold px-1.5 py-0.5 rounded shadow-lg tracking-wider uppercase whitespace-nowrap font-sans">
-                          {muni.name}
+                    <foreignObject x={cx - 50} y={cy - 35} width="100" height="30"> {/* Define la caja vectorial donde flotará el texto sobre el centro de gravedad del polígono */}
+                      <div className="flex justify-center"> {/* Centra el elemento de texto horizontalmente */}
+                        <span // Elemento contenedor para el texto con estilo de píldora oscura flotante
+                          className="bg-slate-950 border border-amber-500/30 font-bold px-1.5 py-0.5 rounded shadow-lg tracking-wider uppercase whitespace-nowrap" // Clases base estables para legibilidad
+                          style={{ // Aplica estilos dinámicos configurados en el panel de herramientas Figma del administrador
+                            fontFamily: muni.visualStyles?.fontFamily || 'Inter', // Si existe tipografía personalizada, la aplica; de lo contrario usa 'Inter'
+                            fontSize: muni.visualStyles?.fontSize ? `${muni.visualStyles.fontSize}px` : '9px', // Si existe tamaño personalizado, lo aplica; de lo contrario usa 9 píxeles
+                            color: muni.visualStyles?.strokeColor || '#f59e0b', // Sincroniza el color del texto con el color del contorno de la capa catastral para un look consistente
+                          }}
+                        >
+                          {muni.name} {/* Renderiza el nombre de la subdivisión (ej. "La Matanza") */}
                         </span>
                       </div>
                     </foreignObject>

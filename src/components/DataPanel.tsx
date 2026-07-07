@@ -28,6 +28,8 @@ import { ProvinceData } from '../types';
 
 interface DataPanelProps {
   province: ProvinceData;
+  selectedSubdivisionId: string | null;
+  onSelectSubdivision: (id: string | null) => void;
 }
 
 // 1. Mini SVG Segmented Ring Chart (for sectors and spending)
@@ -123,11 +125,79 @@ const SimpleBarChart = ({
   );
 };
 
-export default function DataPanel({ province }: DataPanelProps) {
+export default function DataPanel({
+  province,
+  selectedSubdivisionId,
+  onSelectSubdivision
+}: DataPanelProps) {
   const [navToMuni, setNavToMuni] = useState(false);
+  const selectedSubdivision = province.municipalities?.find(m => m.id === selectedSubdivisionId);
 
   return (
     <div id="data-panel-container" className="flex flex-col space-y-4">
+      {/* Tarjeta de detalle de la división / municipio activo */}
+      {selectedSubdivision && (
+        <motion.div
+          initial={{ opacity: 0, y: -10 }}
+          animate={{ opacity: 1, y: 0 }}
+          className="bg-slate-900 border border-amber-500/30 p-5 rounded-2xl shadow-xl relative overflow-hidden"
+        >
+          {/* Fondo luminoso decorativo */}
+          <div className="absolute top-0 right-0 w-32 h-32 bg-amber-500/5 rounded-full blur-2xl pointer-events-none" />
+          
+          <div className="flex items-start justify-between">
+            <div>
+              <div className="flex items-center space-x-2 mb-1">
+                <span className="text-[9px] bg-amber-500/10 text-amber-400 border border-amber-500/20 px-2 py-0.5 rounded-full font-black uppercase tracking-wider">
+                  Detalle de División Activa
+                </span>
+                <span className="text-slate-600 font-mono text-[9px]">{selectedSubdivision.id}</span>
+              </div>
+              <h3 className="text-2xl font-serif italic text-amber-400 tracking-tight">
+                {selectedSubdivision.name}
+              </h3>
+              <p className="text-xs text-slate-400 mt-1">
+                Datos específicos para la división territorial dentro de <strong className="text-slate-300">{province.name}</strong>.
+              </p>
+            </div>
+            
+            <button
+              onClick={() => onSelectSubdivision(null)}
+              className="text-[10px] bg-slate-950 border border-slate-800 text-slate-400 hover:text-slate-200 px-2.5 py-1.5 rounded transition-all cursor-pointer font-bold uppercase tracking-wider"
+            >
+              Cerrar Detalle ×
+            </button>
+          </div>
+
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mt-4 pt-4 border-t border-slate-800">
+            <div className="bg-slate-950/60 p-3 rounded-xl border border-slate-850 flex items-center space-x-3">
+              <span className="text-xl">📊</span>
+              <div>
+                <span className="text-[9px] text-slate-500 font-bold uppercase tracking-widest block">Índice / Valor</span>
+                <span className="text-base font-extrabold text-slate-200">{selectedSubdivision.value} pts</span>
+              </div>
+            </div>
+
+            <div className="bg-slate-950/60 p-3 rounded-xl border border-slate-850 flex items-center space-x-3">
+              <span className="text-xl">📈</span>
+              <div>
+                <span className="text-[9px] text-slate-500 font-bold uppercase tracking-widest block">Porcentaje Provincial</span>
+                <span className="text-base font-extrabold text-slate-200">{selectedSubdivision.percentage}%</span>
+              </div>
+            </div>
+
+            <div className="bg-amber-950/10 p-3 rounded-xl border border-amber-900/20 flex items-center space-x-3">
+              <span className="text-xl">⚖️</span>
+              <div>
+                <span className="text-[9px] text-amber-400 font-bold uppercase tracking-widest block">Desviación Media</span>
+                <span className="text-base font-extrabold text-amber-400">
+                  {selectedSubdivision.value > 50 ? '+' : ''}{(selectedSubdivision.value - 50).toFixed(1)}%
+                </span>
+              </div>
+            </div>
+          </div>
+        </motion.div>
+      )}
       {/* Encabezado del Sector de Datos */}
       <div id="data-panel-header" className="bg-slate-900/40 rounded-xl border border-slate-800 p-4 shadow-xs flex flex-col md:flex-row md:items-center justify-between gap-3">
         <div>

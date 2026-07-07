@@ -17,13 +17,21 @@ export interface BarChartData {
 }
 
 export interface MunicipalityData {
-  id: string;
-  name: string;
-  value: number; // Value of the currently active metric
-  percentage: number;
-  d?: string;    // Ruta SVG personalizada para renderizar la subdivisión
-  paused?: boolean; // Estado de pausa/desactivación de la subdivisión
-  color?: string;   // Color personalizado pintado desde la paleta interactiva
+  id: string; // Identificador único de la subdivisión (ej. 'AR-B-01')
+  name: string; // Nombre de la subdivisión territorial o municipio (ej. 'La Matanza')
+  value: number; // Valor asociado a la métrica actualmente activa en el visor
+  percentage: number; // Porcentaje de representación de esta subdivisión a nivel provincial
+  d?: string;    // Ruta SVG personalizada para renderizar la forma geométrica (polígono) del territorio
+  paused?: boolean; // Estado booleano para indicar si la subdivisión está inactiva o en pausa
+  color?: string;   // Color personalizado pintado directamente desde la paleta interactiva de la aplicación
+  visualStyles?: { // Objeto opcional para estilos de diseño avanzados compatibles con nuestro editor tipo Figma
+    fillColor: string; // Color hexadecimal de relleno del polígono catastral
+    strokeColor: string; // Color hexadecimal del contorno o límite geográfico
+    strokeWidth: number; // Grosor del contorno físico en píxeles
+    fontFamily: string; // Fuente de texto asignada para etiquetas informativas
+    fontSize: number; // Tamaño físico del texto en píxeles
+  }; // Fin de la declaración de estilos visuales
+  customData?: Record<string, any>; // Estructura JSON flexible para almacenar metadatos catastrales e indicadores ilimitados (clave/valor)
 }
 
 export interface ProvinceData {
