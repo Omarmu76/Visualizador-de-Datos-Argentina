@@ -24,12 +24,16 @@ import {
   HelpCircle,
   Clock
 } from 'lucide-react';
-import { ProvinceData } from '../types';
+import { ProvinceData, RegionNode, NavNode } from '../types'; // Importación de tipos de datos e interfaces
 
 interface DataPanelProps {
-  province: ProvinceData;
-  selectedSubdivisionId: string | null;
-  onSelectSubdivision: (id: string | null) => void;
+  province: ProvinceData; // Datos de la provincia o lienzo territorial activo
+  selectedSubdivisionId: string | null; // ID de la subdivisión o departamento seleccionado
+  onSelectSubdivision: (id: string | null) => void; // Función callback para seleccionar subdivisión
+  navigationPath?: RegionNode[]; // Arreglo opcional de ruta jerárquica regional tradicional
+  onBreadcrumbClick?: (index: number) => void; // Función opcional para retroceder en migas tradicionales
+  navPath?: NavNode[]; // Arreglo del historial de navegación dinámico universal (Motor Vectorial)
+  goBackToNode?: (index: number) => void; // Función para retroceder hasta el índice de nodo seleccionado en el historial
 }
 
 // 1. Mini SVG Segmented Ring Chart (for sectors and spending)
@@ -128,13 +132,57 @@ const SimpleBarChart = ({
 export default function DataPanel({
   province,
   selectedSubdivisionId,
-  onSelectSubdivision
+  onSelectSubdivision,
+  navigationPath = [],
+  onBreadcrumbClick,
+  navPath,
+  goBackToNode
 }: DataPanelProps) {
   const [navToMuni, setNavToMuni] = useState(false);
   const selectedSubdivision = province.municipalities?.find(m => m.id === selectedSubdivisionId);
 
+  // Determinación de la lista de nodos de navegación a desplegar (priorizando navPath universal)
+  const displayNodes = (navPath && navPath.length > 0)
+    ? navPath
+    : navigationPath.map(n => ({ id: n.id, name: n.name, type: n.level }));
+
+  // Manejador unificado para la interacción con los eslabones de las migas de pan
+  const handleNodeClick = (index: number) => {
+    if (goBackToNode) {
+      goBackToNode(index); // Ejecuta el recorte del historial universal navPath
+    } else if (onBreadcrumbClick) {
+      onBreadcrumbClick(index); // Ejecuta el manejador de navegación regional tradicional
+    }
+  };
+
   return (
     <div id="data-panel-container" className="flex flex-col space-y-4">
+      {/* Breadcrumbs Universales Dinámicas - Historial de Ruta Vectorial Jerárquica */}
+      {displayNodes.length > 0 && (
+        <div className="bg-slate-900/60 border border-slate-800/80 px-4 py-2.5 rounded-xl flex flex-wrap items-center gap-1 text-[11px] font-mono shadow-sm">
+          <span className="text-slate-500 font-bold uppercase tracking-wider mr-1">Ruta Universal:</span>
+          {displayNodes.map((node, index) => {
+            const isLast = index === displayNodes.length - 1; // Verifica si el nodo es la posición actual activa
+            return (
+              <span key={`${node.id}-${index}`} className="flex items-center">
+                <button
+                  onClick={() => handleNodeClick(index)} // Llama a la función al hacer clic en un eslabón anterior
+                  disabled={isLast} // Deshabilita el clic si es la posición actual
+                  className={`transition-all font-bold tracking-tight rounded px-1.5 py-0.5 ${
+                    isLast
+                      ? 'text-emerald-400 cursor-default font-black' // Estilo para la ubicación actual
+                      : 'text-slate-400 hover:text-slate-200 hover:bg-slate-800/50 cursor-pointer' // Estilo para eslabones navegables
+                  }`}
+                >
+                  {node.name} {/* Muestra el nombre dinámico del nodo */}
+                </button>
+                {!isLast && <span className="text-slate-600 mx-1 font-sans">{'>'}</span>} {/* Separador de eslabón */}
+              </span>
+            );
+          })}
+        </div>
+      )}
+
       {/* Tarjeta de detalle de la división / municipio activo */}
       {selectedSubdivision && (
         <motion.div
@@ -178,7 +226,7 @@ export default function DataPanel({
               </div>
             </div>
 
-            <div className="bg-slate-950/60 p-3 rounded-xl border border-slate-850 flex items-center space-x-3">
+            <div className="bg-[#0b1325]/80 p-3 rounded-xl border border-slate-800 flex items-center space-x-3">
               <span className="text-xl">📈</span>
               <div>
                 <span className="text-[9px] text-slate-500 font-bold uppercase tracking-widest block">Porcentaje Provincial</span>
@@ -191,41 +239,58 @@ export default function DataPanel({
               <div>
                 <span className="text-[9px] text-amber-400 font-bold uppercase tracking-widest block">Desviación Media</span>
                 <span className="text-base font-extrabold text-amber-400">
-                  {selectedSubdivision.value > 50 ? '+' : ''}{(selectedSubdivision.value - 50).toFixed(1)}%
+                  {((selectedSubdivision.value ?? 50) - 50) >= 0 ? '+' : ''}{((selectedSubdivision.value ?? 50) - 50).toFixed(1)}%
                 </span>
               </div>
             </div>
           </div>
         </motion.div>
       )}
-      {/* Encabezado del Sector de Datos */}
+      {/* Encabezado del Sector de Datos con Indicación de Vista Actual Master */}
       <div id="data-panel-header" className="bg-slate-900/40 rounded-xl border border-slate-800 p-4 shadow-xs flex flex-col md:flex-row md:items-center justify-between gap-3">
+        {/* Contenedor de títulos e indicadores de jerarquía Master */}
         <div>
+          {/* Insignia indicadora de vista de alcance o nivel macro activo */}
+          <div className="flex items-center space-x-2 mb-1">
+            <span className="text-[9px] bg-emerald-500/10 text-emerald-400 border border-emerald-500/20 px-2 py-0.5 rounded-full font-black uppercase tracking-wider flex items-center">
+              <span className="w-1.5 h-1.5 bg-emerald-400 rounded-full mr-1 animate-pulse" /> {/* Punto indicador */}
+              Vista Master Actual {/* Etiqueta de la arquitectura Maestro-Detalle */}
+            </span>
+            <span className="text-slate-500 font-mono text-[9px]">
+              {province.abbreviation || province.id} {/* Abreviatura de la entidad */}
+            </span>
+          </div>
+          {/* Subtítulo indicativo del nivel de datos */}
           <span className="text-[10px] font-bold text-slate-500 uppercase tracking-widest block mb-0.5">
-            Indicadores Federales
+            {province.id === 'WORLD_MAP' ? 'Indicadores Globales (Mundo)' : // Caso Mundo
+             province.id === 'CONTINENT_MAP' ? 'Indicadores Continentales' : // Caso Continente
+             'Indicadores Federales (Nivel País)'} {/* Caso República Argentina por defecto */}
           </span>
+          {/* Título principal con el nombre del territorio Master activo */}
           <h2 className="text-2xl font-serif italic text-emerald-400 tracking-tight">
-            {province.name}
+            {province.name} {/* Nombre de la provincia o país activo */}
           </h2>
         </div>
 
-        {/* Toggle Navegar a Municipios */}
-        <div className="flex items-center space-x-3 bg-slate-950 p-1.5 px-3 rounded border border-slate-800">
+        {/* Interruptor de Navegación Maestro-Detalle hacia Municipios o Hijos */}
+        <div className="flex items-center space-x-3 bg-slate-950 p-2 px-3 rounded-lg border border-slate-800 shadow-sm">
+          {/* Botón de switch o toggle */}
           <button
-            onClick={() => setNavToMuni(!navToMuni)}
+            onClick={() => setNavToMuni(!navToMuni)} // Alterna el estado de navegación
             className={`w-10 h-5 rounded-full transition-all duration-300 relative focus:outline-none cursor-pointer ${
-              navToMuni ? 'bg-emerald-600' : 'bg-slate-800'
-            }`}
+              navToMuni ? 'bg-emerald-600' : 'bg-slate-800' // Cambia color de fondo según el estado
+            }`} // Clases base de Tailwind
           >
-            <div
+            <div // Píldora circular deslizante
               className={`w-3.5 h-3.5 bg-white rounded-full absolute top-0.75 transition-all duration-300 shadow-sm ${
-                navToMuni ? 'left-5.5' : 'left-1'
-              }`}
+                navToMuni ? 'left-5.5' : 'left-1' // Desplaza la bolita
+              }`} // Clases de posición
             />
           </button>
+          {/* Etiqueta de texto de la acción */}
           <span className="text-xs text-slate-300 font-bold flex items-center">
-            <Navigation size={13} className="mr-1 text-slate-500" />
-            Navegar a Municipios
+            <Navigation size={13} className="mr-1.5 text-emerald-400" /> {/* Icono de brújula de navegación */}
+            {province.id === 'WORLD_MAP' || province.id === 'CONTINENT_MAP' ? 'Navegar a Países' : 'Explorar Municipios'} {/* Texto de acción */}
           </span>
         </div>
       </div>
@@ -251,15 +316,17 @@ export default function DataPanel({
                 <Percent size={18} className="text-emerald-400" />
                 <div>
                   <span className="text-[10px] text-slate-500 font-bold block uppercase leading-tight">Gini</span>
-                  <span className="text-base font-extrabold text-slate-200 leading-none">{province.economicProfile.gini}%</span>
+                  <span className="text-base font-extrabold text-slate-200 leading-none">{province.economicProfile?.gini ?? 0}%</span>
                 </div>
               </div>
 
               <div className="bg-slate-950/40 p-2.5 rounded border border-slate-800 flex items-center space-x-2">
                 <TrendingUp size={18} className="text-emerald-400" />
                 <div>
-                  <span className="text-[10px] text-slate-500 font-bold block uppercase leading-tight">PIB Provincial</span>
-                  <span className="text-base font-extrabold text-emerald-400 leading-none">{province.economicProfile.pib}</span>
+                  <span className="text-[10px] text-slate-500 font-bold block uppercase leading-tight">
+                    {province.id === 'WORLD_MAP' ? 'PIB Mundial' : province.id === 'CONTINENT_MAP' ? 'PIB Continental' : 'PIB Provincial'}
+                  </span>
+                  <span className="text-base font-extrabold text-emerald-400 leading-none">{province.economicProfile?.pib ?? 'N/A'}</span>
                 </div>
               </div>
             </div>
@@ -268,12 +335,12 @@ export default function DataPanel({
           <div className="grid grid-cols-1 md:grid-cols-2 gap-4 pt-2 border-t border-slate-800/40 items-center">
             <div className="flex flex-col space-y-1">
               <span className="text-[10px] text-slate-500 font-bold uppercase tracking-wider block">Distribución por sector</span>
-              <SimpleRingChart sectors={province.economicProfile.sectors} centerLabel="Sect" />
+              <SimpleRingChart sectors={province.economicProfile?.sectors || []} centerLabel="Sect" />
             </div>
 
             <div className="bg-emerald-950/10 p-3 rounded border border-emerald-900/30 flex flex-col justify-center h-full">
               <span className="text-[9px] text-emerald-400 font-bold uppercase block tracking-widest mb-1">Salario Promedio</span>
-              <span className="text-lg font-bold text-emerald-400 font-serif italic">{province.economicProfile.averageSalary} <span className="text-[10px] text-emerald-500/80 font-semibold font-sans not-italic">Provincia</span></span>
+              <span className="text-lg font-bold text-emerald-400 font-serif italic">{province.economicProfile?.averageSalary ?? 'N/A'} <span className="text-[10px] text-emerald-500/80 font-semibold font-sans not-italic">{province.id === 'WORLD_MAP' ? 'Mundo' : province.id === 'CONTINENT_MAP' ? 'Regional' : 'Provincia'}</span></span>
             </div>
           </div>
         </div>
@@ -294,7 +361,7 @@ export default function DataPanel({
                 <AlertTriangle size={20} className="text-red-400" />
                 <div>
                   <span className="text-[10px] text-slate-500 font-bold block uppercase tracking-wider">Pobreza (%)</span>
-                  <span className="text-lg font-black text-slate-200 leading-none">{province.socialEmployment.pobreza.toFixed(1)}</span>
+                  <span className="text-lg font-black text-slate-200 leading-none">{(province.socialEmployment?.pobreza ?? 0).toFixed(1)}</span>
                   <span className="text-[8px] text-slate-500 block mt-0.5">{province.name}</span>
                 </div>
               </div>
@@ -303,7 +370,7 @@ export default function DataPanel({
                 <TrendingDown size={20} className="text-amber-400" />
                 <div>
                   <span className="text-[10px] text-slate-500 font-bold block uppercase tracking-wider">Desempleo (%)</span>
-                  <span className="text-lg font-black text-slate-200 leading-none">{province.socialEmployment.desempleo.toFixed(1)}</span>
+                  <span className="text-lg font-black text-slate-200 leading-none">{(province.socialEmployment?.desempleo ?? 0).toFixed(1)}</span>
                   <span className="text-[8px] text-slate-500 block mt-0.5">{province.name}</span>
                 </div>
               </div>
@@ -312,7 +379,7 @@ export default function DataPanel({
                 <Users size={20} className="text-slate-500" />
                 <div>
                   <span className="text-[10px] text-slate-500 font-bold block uppercase tracking-wider">Empleo Informal (%)</span>
-                  <span className="text-lg font-black text-slate-200 leading-none">{province.socialEmployment.informalEmployment}%</span>
+                  <span className="text-lg font-black text-slate-200 leading-none">{province.socialEmployment?.informalEmployment ?? 0}%</span>
                   <span className="text-[8px] text-slate-500 block mt-0.5">{province.name}</span>
                 </div>
               </div>
@@ -321,7 +388,7 @@ export default function DataPanel({
                 <Percent size={20} className="text-emerald-400" />
                 <div>
                   <span className="text-[10px] text-slate-500 font-bold block uppercase tracking-wider">Informalidad Juvenil</span>
-                  <span className="text-lg font-black text-slate-200 leading-none">{province.socialEmployment.youthInformality}%</span>
+                  <span className="text-lg font-black text-slate-200 leading-none">{province.socialEmployment?.youthInformality ?? 0}%</span>
                   <span className="text-[8px] text-slate-500 block mt-0.5">{province.name}</span>
                 </div>
               </div>
@@ -345,13 +412,15 @@ export default function DataPanel({
 
             <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
               <div className="flex flex-col space-y-1.5">
-                <span className="text-[10px] text-slate-500 font-bold uppercase tracking-wider block">Salario Mínimo Provincial</span>
-                <SimpleBarChart data={province.incomeStructure.minimumSalary} color="#10b981" />
+                <span className="text-[10px] text-slate-500 font-bold uppercase tracking-wider block">
+                  {province.id === 'WORLD_MAP' ? 'Salario Mínimo Global' : province.id === 'CONTINENT_MAP' ? 'Salario Mínimo Regional' : 'Salario Mínimo Provincial'}
+                </span>
+                <SimpleBarChart data={province.incomeStructure?.minimumSalary || []} color="#10b981" />
               </div>
 
               <div className="flex flex-col space-y-1.5">
                 <span className="text-[10px] text-slate-500 font-bold uppercase tracking-wider block">Brecha Salarial de Género</span>
-                <SimpleBarChart data={province.incomeStructure.genderGap} color="#059669" />
+                <SimpleBarChart data={province.incomeStructure?.genderGap || []} color="#059669" />
               </div>
             </div>
           </div>
@@ -377,7 +446,7 @@ export default function DataPanel({
                   <Wifi size={11} className="mr-1 text-slate-600" />
                   Acceso a Internet (%)
                 </span>
-                <SimpleBarChart data={province.connectivity.internetAccess} color="#047857" />
+                <SimpleBarChart data={province.connectivity?.internetAccess || []} color="#047857" />
               </div>
 
               <div className="flex flex-col space-y-1.5">
@@ -385,7 +454,7 @@ export default function DataPanel({
                   <Smartphone size={11} className="mr-1 text-slate-600" />
                   Líneas Móviles
                 </span>
-                <SimpleBarChart data={province.connectivity.mobileLines} color="#10b981" />
+                <SimpleBarChart data={province.connectivity?.mobileLines || []} color="#10b981" />
               </div>
             </div>
           </div>
@@ -411,7 +480,7 @@ export default function DataPanel({
                   <PieIcon size={11} className="mr-1 text-slate-600" />
                   Gasto Social
                 </span>
-                <SimpleRingChart sectors={province.budgetSpending.socialSpending} centerLabel="Gto" />
+                <SimpleRingChart sectors={province.budgetSpending?.socialSpending || []} centerLabel="Gto" />
               </div>
 
               <div className="flex flex-col space-y-1.5">
@@ -419,7 +488,7 @@ export default function DataPanel({
                   <BookOpen size={11} className="mr-1 text-slate-600" />
                   Inversión en Educación
                 </span>
-                <SimpleBarChart data={province.budgetSpending.educationInvestment} color="#34d399" height={70} />
+                <SimpleBarChart data={province.budgetSpending?.educationInvestment || []} color="#34d399" height={70} />
               </div>
             </div>
           </div>
@@ -440,21 +509,21 @@ export default function DataPanel({
               <div className="bg-slate-950/40 p-2.5 rounded border border-slate-800 flex flex-col items-center text-center justify-center">
                 <span className="text-[14px] font-bold text-slate-500">A</span>
                 <span className="text-[9px] text-slate-500 font-bold uppercase block tracking-wider mt-1">Red Vial Provincial</span>
-                <span className="text-base font-black text-slate-200 mt-1 leading-tight">{province.mobilityServices.roadNetwork}</span>
+                <span className="text-base font-black text-slate-200 mt-1 leading-tight">{province.mobilityServices?.roadNetwork ?? 'N/A'}</span>
                 <span className="text-[8px] text-slate-500 mt-0.5">Acceso provincial</span>
               </div>
 
               <div className="bg-emerald-950/10 p-2.5 rounded border border-emerald-900/20 flex flex-col items-center text-center justify-center">
                 <span className="text-[14px] font-bold text-emerald-400">💧</span>
                 <span className="text-[9px] text-slate-500 font-bold uppercase block tracking-wider mt-1">Acceso a Agua Potable</span>
-                <span className="text-base font-bold text-emerald-400 font-serif italic mt-1 leading-tight">{province.mobilityServices.waterAccess}%</span>
+                <span className="text-base font-bold text-emerald-400 font-serif italic mt-1 leading-tight">{province.mobilityServices?.waterAccess ?? 0}%</span>
                 <span className="text-[8px] text-emerald-500/50 mt-0.5">Servicios de red</span>
               </div>
 
               <div className="bg-slate-950/40 p-2.5 rounded border border-slate-800 flex flex-col items-center text-center justify-center">
                 <span className="text-[14px] font-bold text-emerald-400">🚌</span>
                 <span className="text-[9px] text-slate-500 font-bold uppercase block tracking-wider mt-1">Transporte Público</span>
-                <span className="text-base font-black text-slate-200 mt-1 leading-tight">{province.mobilityServices.publicTransportLines}</span>
+                <span className="text-base font-black text-slate-200 mt-1 leading-tight">{province.mobilityServices?.publicTransportLines ?? 0}</span>
                 <span className="text-[8px] text-slate-500 mt-0.5">Líneas registradas</span>
               </div>
             </div>

@@ -4,7 +4,7 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useMemo } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
 import { 
   MapPin, 
@@ -20,57 +20,37 @@ import {
   Palette, 
   Layers, 
   HelpCircle,
-  X
-} from 'lucide-react';
-import { provincePaths } from '../data/provincePaths';
-import { MetricType, ProvinceData, MunicipalityData } from '../types';
-import { mockProvincesData } from '../data/mockData';
+  X,
+  Globe,
+  HeartPulse,
+  Building2,
+  Cpu,
+  Grid,
+  Navigation
+} from 'lucide-react'; // Importación de íconos vectoriales para la interfaz interactiva con Navigation incluida
+import { provincePaths } from '../data/provincePaths'; // Importación de los trazos vectoriales de las provincias argentinas
+import { MetricType, ProvinceData, MunicipalityData, RegionNode, NavNode } from '../types'; // Importación del modelo de tipos de datos y nodos universales
+import { mockProvincesData } from '../data/mockData'; // Importación de datos mock de provincias
+import { getPathBBox, getMultiplePathsBBox } from '../lib/mapUtils'; // Helper para cálculo de cajas límite Bounding Box
+import { safeGetItem } from '../lib/storage'; // Utilidad para lectura segura protegida contra excepciones
 
-// Helper function to calculate Bounding Box of an SVG Path dynamically
-function getPathBBox(d: string) {
-  const matches = d.match(/[-+]?[0-9]*\.?[0-9]+/g);
-  if (!matches || matches.length < 2) {
-    return { x: 260, y: -2, width: 440, height: 964 };
-  }
-  const numbers = matches.map(Number);
-  const xCoords: number[] = [];
-  const yCoords: number[] = [];
-  
-  for (let i = 0; i < numbers.length; i += 2) {
-    if (i + 1 < numbers.length) {
-      xCoords.push(numbers[i]);
-      yCoords.push(numbers[i+1]);
-    }
-  }
-  
-  if (xCoords.length === 0) {
-    return { x: 260, y: -2, width: 440, height: 964 };
-  }
-  
-  const minX = Math.min(...xCoords);
-  const maxX = Math.max(...xCoords);
-  const minY = Math.min(...yCoords);
-  const maxY = Math.max(...yCoords);
-  
-  return {
-    x: minX,
-    y: minY,
-    width: maxX - minX,
-    height: maxY - minY
-  };
-}
-
+// Interfaz de propiedades actualizadas para el componente del mapa vectorial interactivo universal
 interface InteractiveMapProps {
-  selectedProvince: ProvinceData;
-  onSelectProvince: (province: ProvinceData) => void;
-  onUpdateProvince: (province: ProvinceData) => void;
-  selectedMetric: MetricType;
-  onChangeMetric: (metric: MetricType) => void;
-  activeMapLevel: string;
-  setActiveMapLevel: (level: string) => void;
-  mapLevels: { id: string; name: string }[];
-  selectedSubdivisionId: string | null;
-  setSelectedSubdivisionId: (id: string | null) => void;
+  selectedProvince: ProvinceData; // Provincia o nodo geográfico seleccionado actualmente
+  onSelectProvince: (province: ProvinceData) => void; // Manejador para cambiar la provincia seleccionada
+  onUpdateProvince: (province: ProvinceData) => void; // Manejador para actualizar datos de la provincia
+  selectedMetric: MetricType; // Métrica estadística activa (Pobreza, Desempleo, Gini, Conectividad)
+  onChangeMetric: (metric: MetricType) => void; // Manejador para cambiar la métrica activa
+  activeMapLevel: string; // Identificador del nivel de alcance de mapa activo (ej: country, world, etc.)
+  setActiveMapLevel: (level: string) => void; // Manejador para modificar el nivel activo
+  mapLevels: { id: string; name: string }[]; // Colección de niveles de mapa disponibles
+  selectedSubdivisionId: string | null; // Identificador de la subdivisión activa seleccionada
+  setSelectedSubdivisionId: (id: string | null) => void; // Manejador para seleccionar subdivisión
+  navigationPath?: RegionNode[]; // Historial de migas de pan regional tradicional
+  onBreadcrumbClick?: (index: number) => void; // Manejador de clics en migas tradicionales
+  navPath?: NavNode[]; // Historial de navegación dinámico universal (Motor Vectorial)
+  goBackToNode?: (index: number) => void; // Manejador para retroceder en las migas universales
+  onNavigateToNode?: (node: NavNode) => void; // Manejador para avanzar jerárquicamente a un nuevo nodo
 }
 
 export default function InteractiveMap({
@@ -83,17 +63,49 @@ export default function InteractiveMap({
   setActiveMapLevel,
   mapLevels,
   selectedSubdivisionId,
-  setSelectedSubdivisionId
+  setSelectedSubdivisionId,
+  navigationPath = [],
+  onBreadcrumbClick,
+  navPath = [], // Prop de historial de navegación dinámico con valor por defecto
+  goBackToNode, // Manejador para retroceder en la jerarquía universal
+  onNavigateToNode // Manejador para profundizar a un nodo hijo
 }: InteractiveMapProps) {
-  const [hoveredProv, setHoveredProv] = useState<string | null>(null);
-  const [zoomLevel, setZoomLevel] = useState(1);
-  const [panOffset, setPanOffset] = useState({ x: 0, y: 0 });
-  const [hoveredMuni, setHoveredMuni] = useState<string | null>(null);
+  const [hoveredProv, setHoveredProv] = useState<string | null>(null); // Estado de provincia en hover
+  const [zoomLevel, setZoomLevel] = useState(1); // Estado de nivel de zoom del lienzo
+  const [panOffset, setPanOffset] = useState({ x: 0, y: 0 }); // Estado de desplazamiento del lienzo (pan)
+  const [hoveredMuni, setHoveredMuni] = useState<string | null>(null); // Estado de subdivisión en hover
+  const [showCategoryGrid, setShowCategoryGrid] = useState<boolean>(false); // Estado para alternar el menú de categorías grandes
+
+  // Identificación del nodo activo en el historial de navegación dinámico universal navPath
+  const currentNode = useMemo(() => { // Memoriza el último nodo activo
+    if (navPath && navPath.length > 0) { // Si existe el arreglo navPath
+      return navPath[navPath.length - 1]; // Devuelve el último nodo activo
+    } // Fin del condicional
+    return { id: 'root', name: 'Inicio', type: 'root' }; // Fallback a nodo raíz
+  }, [navPath]); // Dependencias del memorizador
+
+  // Evaluación si estamos actualmente en el nivel raíz (Categorías Principales)
+  const isAtRoot = useMemo(() => { // Memoriza el estado de raíz
+    return currentNode.id === 'root' || (!navPath || navPath.length <= 1); // Evalúa si es la raíz
+  }, [currentNode, navPath]); // Dependencias
+
+  // Carga segura de nodos guardados en la base de datos geoNodes local (geo_nodes_database)
+  const savedGeoNodes = useMemo(() => { // Memoriza los nodos en BD
+    const raw = safeGetItem('geo_nodes_database'); // Lee la cadena JSON desde localStorage
+    if (raw) { // Si existe la entrada
+      try { // Intenta deserializar el contenido
+        const parsed = JSON.parse(raw); // Convierte a objeto JS
+        if (Array.isArray(parsed)) return parsed; // Si es un arreglo lo retorna
+      } catch (e) { // En caso de fallo
+        console.error('Error al analizar geo_nodes_database:', e); // Imprime error
+      } // Fin de try-catch
+    } // Fin del condicional raw
+    return []; // Retorna arreglo vacío por defecto
+  }, [currentNode.id]); // Dependencias
 
   // States for Map Layer and Vector Manager
   const [showManager, setShowManager] = useState(false);
-  const [managerTab, setManagerTab] = useState<'import' | 'palette' | 'divisions'>('import');
-  const [importText, setImportText] = useState('');
+  const [managerTab, setManagerTab] = useState<'palette' | 'divisions'>('palette');
 
   // Input states for editing individual subdivisions
   const [editSubName, setEditSubName] = useState('');
@@ -104,6 +116,71 @@ export default function InteractiveMap({
   const [miniScale, setMiniScale] = useState(1.0);
   const [miniPanX, setMiniPanX] = useState(0);
   const [miniPanY, setMiniPanY] = useState(0);
+
+  // Subdivisión / vectores válidos para nivel activo
+  const validMunicipalities = useMemo(() => {
+    return (selectedProvince.municipalities || []).filter(m => m.d && m.d.trim().length > 0 && !m.paused);
+  }, [selectedProvince.municipalities]);
+
+  const dynamicStrokeUnit = useMemo(() => {
+    if (validMunicipalities.length === 0) return 1.2;
+    const bbox = getMultiplePathsBBox(validMunicipalities);
+    return Math.max(0.3, Math.min(bbox.width, bbox.height) / 350);
+  }, [validMunicipalities]);
+
+  // Sincronización dinámica de coordenadas de mapas calibradas
+  const [calibratedPathsTimestamp, setCalibratedPathsTimestamp] = useState<string>(() => {
+    return safeGetItem('argentina_paths_last_updated') || ''; // Carga segura de marca temporal
+  });
+
+  const activeProvincePaths = React.useMemo(() => {
+    const saved = safeGetItem('argentina_calibrated_map_paths'); // Carga segura de rutas calibradas
+    if (saved) {
+      try {
+        const parsed = JSON.parse(saved) as { id: string; d: string }[];
+        if (Array.isArray(parsed)) {
+          const pathMap = new Map(parsed.map(item => [item.id, item.d]));
+          return provincePaths.map(p => {
+            if (pathMap.has(p.id)) {
+              return { ...p, d: pathMap.get(p.id)! };
+            }
+            return p;
+          });
+        }
+      } catch (e) {
+        console.error('Error parsing calibrated map paths:', e);
+      }
+    }
+    return provincePaths;
+  }, [calibratedPathsTimestamp]);
+
+  const dynamicViewBox = useMemo(() => {
+    // 1. Nivel País (Argentina con sus 24 provincias): Mantiene exacto el viewBox calibrado (NO TOCAR ARGENTINA QUE ESTA BIEN)
+    if (activeMapLevel === 'country' || activeMapLevel === 'pais') {
+      return "260 -2 440 964"; // Coordenadas geográficas calibradas para la República Argentina
+    }
+
+    // 2. Si se han subido o importado trazos vectoriales para Mundo, Continente o Provincias:
+    // Se calcula automáticamente la caja contenedora (Bounding Box) de todos los trazos para que se acomode perfecto.
+    if (validMunicipalities.length > 0) {
+      const bbox = getMultiplePathsBBox(validMunicipalities); // Determina los límites geográficos exactos
+      if (bbox.width > 0 && bbox.height > 0) {
+        const padX = Math.max(10, bbox.width * 0.05); // Acolchado horizontal responsivo
+        const padY = Math.max(10, bbox.height * 0.05); // Acolchado vertical responsivo
+        return `${bbox.x - padX} ${bbox.y - padY} ${bbox.width + padX * 2} ${bbox.height + padY * 2}`; // Encadre perfecto
+      }
+    }
+
+    // 3. Vistas por defecto cuando aún no se han subido trazados vectoriales custom
+    if (activeMapLevel === 'world') return "0 0 1024 512"; // Vista estándar para el mapa mundial
+    if (activeMapLevel === 'continent') return "0 0 800 1000"; // Vista estándar para mapa continental
+
+    // 4. Bounding box automático basado en la silueta de la provincia activa
+    const selectedProvincePath = activeProvincePaths.find(p => p.id === selectedProvince.id)?.d || '';
+    const bbox = getPathBBox(selectedProvincePath); // Obtiene la caja límites de la provincia seleccionada
+    const pad = 20; // Margen uniforme
+    return `${bbox.x - pad} ${bbox.y - pad} ${bbox.width + pad * 2} ${bbox.height + pad * 2}`;
+  }, [activeMapLevel, validMunicipalities, selectedProvince.id, activeProvincePaths]);
 
   // Sync transform states when selected province or its custom mapTransform changes
   useEffect(() => {
@@ -137,7 +214,7 @@ export default function InteractiveMap({
   };
 
   const updateMunicipality = (muniId: string, changes: Partial<MunicipalityData>) => {
-    const updatedMunis = selectedProvince.municipalities.map(m => {
+    const updatedMunis = (selectedProvince.municipalities || []).map(m => {
       if (m.id === muniId) {
         return { ...m, ...changes };
       }
@@ -149,35 +226,9 @@ export default function InteractiveMap({
   // SVG Paths for the 24 provinces of Argentina (Coordenadas reales integradas)
   // provincePaths has been migrated to src/data/provincePaths.ts
 
-  // Sincronización dinámica de coordenadas de mapas calibradas
-  const [calibratedPathsTimestamp, setCalibratedPathsTimestamp] = useState<string>(() => {
-    return localStorage.getItem('argentina_paths_last_updated') || '';
-  });
-
-  const activeProvincePaths = React.useMemo(() => {
-    const saved = localStorage.getItem('argentina_calibrated_map_paths');
-    if (saved) {
-      try {
-        const parsed = JSON.parse(saved) as { id: string; d: string }[];
-        if (Array.isArray(parsed)) {
-          const pathMap = new Map(parsed.map(item => [item.id, item.d]));
-          return provincePaths.map(p => {
-            if (pathMap.has(p.id)) {
-              return { ...p, d: pathMap.get(p.id)! };
-            }
-            return p;
-          });
-        }
-      } catch (e) {
-        console.error('Error parsing calibrated map paths:', e);
-      }
-    }
-    return provincePaths;
-  }, [calibratedPathsTimestamp]);
-
   useEffect(() => {
     const checkPathsUpdated = () => {
-      const ts = localStorage.getItem('argentina_paths_last_updated') || '';
+      const ts = safeGetItem('argentina_paths_last_updated') || ''; // Lee marca de tiempo segura
       if (ts !== calibratedPathsTimestamp) {
         setCalibratedPathsTimestamp(ts);
       }
@@ -204,13 +255,13 @@ export default function InteractiveMap({
     if (!data) return 0;
     switch (metric) {
       case 'pobreza':
-        return data.socialEmployment.pobreza;
+        return data.socialEmployment?.pobreza ?? 0;
       case 'desempleo':
-        return data.socialEmployment.desempleo;
+        return data.socialEmployment?.desempleo ?? 0;
       case 'gini':
-        return data.economicProfile.gini;
+        return data.economicProfile?.gini ?? 0;
       case 'conectividad':
-        return data.connectivity.internetAccess[2]?.value || 50;
+        return data.connectivity?.internetAccess?.[2]?.value ?? 50;
       default:
         return 0;
     }
@@ -266,7 +317,7 @@ export default function InteractiveMap({
 
   return (
     <div id="interactive-map-container" className="flex flex-col h-full space-y-4">
-      {/* Selector de Métrica */}
+      {/* Selector de Métrica y Modo de Categorías Grandes */}
       <div id="map-controls" className="bg-slate-900/40 rounded-xl border border-slate-800 p-4 shadow-sm">
         <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
           <div>
@@ -288,6 +339,19 @@ export default function InteractiveMap({
           </div>
 
           <div className="flex items-center space-x-2">
+            {/* Botón para alternar el menú de Categorías Grandes Principales */}
+            <button
+              onClick={() => setShowCategoryGrid(!showCategoryGrid)}
+              className={`flex items-center space-x-1.5 px-3 py-2 text-xs font-bold rounded border transition-all cursor-pointer ${
+                showCategoryGrid || isAtRoot
+                  ? 'bg-emerald-500/10 border-emerald-500 text-emerald-400'
+                  : 'bg-slate-950 border-slate-800 text-slate-300 hover:text-emerald-400'
+              }`}
+              title="Explorar Categorías Grandes"
+            >
+              <Grid size={16} />
+              <span>Categorías</span>
+            </button>
             <button
               onClick={() => handleZoom('in')}
               className="p-2 bg-slate-950 hover:bg-slate-900 border border-slate-800 text-slate-300 rounded transition-colors cursor-pointer hover:text-emerald-400"
@@ -332,54 +396,295 @@ export default function InteractiveMap({
         </div>
       </div>
 
-      {/* Caja Principal del Mapa SVG */}
-      <div id="svg-map-wrapper" className="relative flex-1 min-h-[380px] bg-slate-950 rounded border border-slate-800 overflow-hidden flex items-center justify-center p-4">
-        {/* Selector de Nivel de Mapas Desplegable (Súper Pro y Elegante) */}
-        <div className="absolute top-4 left-4 z-10 flex flex-col space-y-1.5 bg-slate-900/95 backdrop-blur-md p-3 rounded-lg border border-slate-800 shadow-xl min-w-[180px]">
-          <span className="text-[9px] font-bold text-slate-500 uppercase tracking-widest block">
-            Alcance del Mapa (Vista)
-          </span>
-          <select
-            id="map-level-select"
-            value={activeMapLevel}
-            onChange={(e) => {
-              setActiveMapLevel(e.target.value);
-              setSelectedSubdivisionId(null);
-            }}
-            className="w-full bg-slate-950 border border-slate-800 text-slate-200 text-xs font-bold rounded p-1.5 outline-none transition-all focus:border-emerald-500 cursor-pointer text-emerald-400"
-          >
-            {mapLevels.map(level => (
-              <option key={level.id} value={level.id}>
-                {level.id === 'world' ? '🌎 ' :
-                 level.id === 'continent' ? '🗺️ ' :
-                 level.id === 'country' ? '🇦🇷 ' :
-                 level.id === 'province' ? '🏢 ' :
-                 level.id === 'city' ? '📍 ' :
-                 level.id === 'neighborhood' ? '🏘️ ' : '💠 '}
-                {level.name}
-              </option>
-            ))}
-          </select>
-          <div className="flex items-center space-x-1.5 text-[8.5px] text-slate-400 mt-1">
-            <span className="w-1.5 h-1.5 bg-emerald-400 rounded-full" />
-            <span>Ver y calibrar capa</span>
+      {/* Renderizado Condicional: Muestra el Menú de Categorías Grandes Principales cuando estamos en el Inicio o activamos showCategoryGrid */}
+      {(isAtRoot || showCategoryGrid) ? (
+        <div className="bg-slate-950 rounded-xl border border-slate-800 p-6 flex flex-col space-y-6 shadow-2xl animate-fade-in">
+          <div className="flex items-center justify-between border-b border-slate-800/80 pb-4">
+            <div>
+              <span className="text-[10px] font-bold text-emerald-400 uppercase tracking-widest block mb-1">
+                Motor Universal de Visualización Vectorial
+              </span>
+              <h2 className="text-lg font-black text-slate-100 flex items-center gap-2">
+                <Grid className="w-5 h-5 text-emerald-400" />
+                <span>Explorar Categorías Principales</span>
+              </h2>
+            </div>
+            {!isAtRoot && (
+              <button
+                onClick={() => setShowCategoryGrid(false)}
+                className="text-xs text-slate-400 hover:text-slate-200 bg-slate-900 border border-slate-800 px-3 py-1.5 rounded-lg cursor-pointer"
+              >
+                Volver a Lienzo Vectorial
+              </button>
+            )}
+          </div>
+
+          <p className="text-xs text-slate-400 leading-relaxed max-w-2xl">
+            Selecciona una categoría estructural para acceder a sus nodos vectoriales con el Estándar de Oro en renderizado dinámico, colorización por métricas y navegación jerárquica.
+          </p>
+
+          {/* Cuadrícula de las 4 Categorías Grandes */}
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+            {/* 1. CARTOGRAFÍA & GEOGRAFÍA */}
+            <motion.div
+              whileHover={{ scale: 1.02 }}
+              whileTap={{ scale: 0.98 }}
+              onClick={() => {
+                setShowCategoryGrid(false);
+                if (onNavigateToNode) {
+                  onNavigateToNode({ id: 'cartografia', name: 'Cartografía & Geografía', type: 'categoria' });
+                }
+                setActiveMapLevel('country');
+              }}
+              className="bg-slate-900/60 hover:bg-slate-900 border border-slate-800 hover:border-emerald-500/50 p-4 rounded-xl cursor-pointer transition-all flex flex-col justify-between space-y-3 group shadow-lg"
+            >
+              <div className="flex items-center space-x-3">
+                <div className="p-3 bg-emerald-500/10 border border-emerald-500/20 rounded-lg group-hover:bg-emerald-500/20 transition-colors">
+                  <Globe className="w-6 h-6 text-emerald-400" />
+                </div>
+                <div>
+                  <h3 className="text-sm font-bold text-slate-100 group-hover:text-emerald-400 transition-colors">
+                    🗺️ CARTOGRAFÍA & GEOGRAFÍA
+                  </h3>
+                  <span className="text-[10px] text-slate-500 font-mono">Mundo / Países / Provincias</span>
+                </div>
+              </div>
+              <p className="text-xs text-slate-400 leading-normal">
+                Mapas del Planeta Tierra, la República Argentina, provincias y divisiones territoriales con capas métricas.
+              </p>
+              <div className="flex flex-wrap gap-1.5 pt-2 border-t border-slate-800/40">
+                {['República Argentina', 'Provincias', 'Municipios', 'Mundo'].map((tag) => (
+                  <span key={tag} className="text-[9px] bg-slate-950 border border-slate-800 text-slate-400 px-2 py-0.5 rounded-md font-medium">
+                    {tag}
+                  </span>
+                ))}
+              </div>
+            </motion.div>
+
+            {/* 2. SALUD & ANATOMÍA */}
+            <motion.div
+              whileHover={{ scale: 1.02 }}
+              whileTap={{ scale: 0.98 }}
+              onClick={() => {
+                setShowCategoryGrid(false);
+                if (onNavigateToNode) {
+                  onNavigateToNode({ id: 'salud', name: 'Salud & Anatomía', type: 'categoria' });
+                }
+              }}
+              className="bg-slate-900/60 hover:bg-slate-900 border border-slate-800 hover:border-rose-500/50 p-4 rounded-xl cursor-pointer transition-all flex flex-col justify-between space-y-3 group shadow-lg"
+            >
+              <div className="flex items-center space-x-3">
+                <div className="p-3 bg-rose-500/10 border border-rose-500/20 rounded-lg group-hover:bg-rose-500/20 transition-colors">
+                  <HeartPulse className="w-6 h-6 text-rose-400" />
+                </div>
+                <div>
+                  <h3 className="text-sm font-bold text-slate-100 group-hover:text-rose-400 transition-colors">
+                    🧬 SALUD & ANATOMÍA
+                  </h3>
+                  <span className="text-[10px] text-slate-500 font-mono">Cuerpo Humano / Órganos</span>
+                </div>
+              </div>
+              <p className="text-xs text-slate-400 leading-normal">
+                Anatomía Humana, sistemas biológicos, órganos y modelos diagnósticos vectoriales interactivos.
+              </p>
+              <div className="flex flex-wrap gap-1.5 pt-2 border-t border-slate-800/40">
+                {['Cuerpo Humano', 'Sistema Nervioso', 'Aparato Digestivo', 'Órganos'].map((tag) => (
+                  <span key={tag} className="text-[9px] bg-slate-950 border border-slate-800 text-slate-400 px-2 py-0.5 rounded-md font-medium">
+                    {tag}
+                  </span>
+                ))}
+              </div>
+            </motion.div>
+
+            {/* 3. NEGOCIOS & ORGANIZACIONES */}
+            <motion.div
+              whileHover={{ scale: 1.02 }}
+              whileTap={{ scale: 0.98 }}
+              onClick={() => {
+                setShowCategoryGrid(false);
+                if (onNavigateToNode) {
+                  onNavigateToNode({ id: 'negocios', name: 'Negocios & Estructuras', type: 'categoria' });
+                }
+              }}
+              className="bg-slate-900/60 hover:bg-slate-900 border border-slate-800 hover:border-sky-500/50 p-4 rounded-xl cursor-pointer transition-all flex flex-col justify-between space-y-3 group shadow-lg"
+            >
+              <div className="flex items-center space-x-3">
+                <div className="p-3 bg-sky-500/10 border border-sky-500/20 rounded-lg group-hover:bg-sky-500/20 transition-colors">
+                  <Building2 className="w-6 h-6 text-sky-400" />
+                </div>
+                <div>
+                  <h3 className="text-sm font-bold text-slate-100 group-hover:text-sky-400 transition-colors">
+                    📊 NEGOCIOS & ORGANIZACIONES
+                  </h3>
+                  <span className="text-[10px] text-slate-500 font-mono">Organigramas / Procesos</span>
+                </div>
+              </div>
+              <p className="text-xs text-slate-400 leading-normal">
+                Organigramas corporativos, mapas de proceso, redes de logística y estructuras organizativas.
+              </p>
+              <div className="flex flex-wrap gap-1.5 pt-2 border-t border-slate-800/40">
+                {['Organigramas', 'Logística', 'Redes de Negocio', 'Flujos'].map((tag) => (
+                  <span key={tag} className="text-[9px] bg-slate-950 border border-slate-800 text-slate-400 px-2 py-0.5 rounded-md font-medium">
+                    {tag}
+                  </span>
+                ))}
+              </div>
+            </motion.div>
+
+            {/* 4. INGENIERÍA & MECÁNICA */}
+            <motion.div
+              whileHover={{ scale: 1.02 }}
+              whileTap={{ scale: 0.98 }}
+              onClick={() => {
+                setShowCategoryGrid(false);
+                if (onNavigateToNode) {
+                  onNavigateToNode({ id: 'ingenieria', name: 'Ingeniería & Mecánica', type: 'categoria' });
+                }
+              }}
+              className="bg-slate-900/60 hover:bg-slate-900 border border-slate-800 hover:border-amber-500/50 p-4 rounded-xl cursor-pointer transition-all flex flex-col justify-between space-y-3 group shadow-lg"
+            >
+              <div className="flex items-center space-x-3">
+                <div className="p-3 bg-amber-500/10 border border-amber-500/20 rounded-lg group-hover:bg-amber-500/20 transition-colors">
+                  <Cpu className="w-6 h-6 text-amber-400" />
+                </div>
+                <div>
+                  <h3 className="text-sm font-bold text-slate-100 group-hover:text-amber-400 transition-colors">
+                    🚗 INGENIERÍA & MECÁNICA
+                  </h3>
+                  <span className="text-[10px] text-slate-500 font-mono">Circuitos / Maquinaria</span>
+                </div>
+              </div>
+              <p className="text-xs text-slate-400 leading-normal">
+                Esquemas técnicos, despiece de maquinaria, circuitos electrónicos y diagramas vectoriales de precisión.
+              </p>
+              <div className="flex flex-wrap gap-1.5 pt-2 border-t border-slate-800/40">
+                {['Automoción', 'Circuitos', 'Sistemas Mecánicos', 'Componentes'].map((tag) => (
+                  <span key={tag} className="text-[9px] bg-slate-950 border border-slate-800 text-slate-400 px-2 py-0.5 rounded-md font-medium">
+                    {tag}
+                  </span>
+                ))}
+              </div>
+            </motion.div>
           </div>
         </div>
+      ) : (
+        /* Caja Principal del Mapa SVG */
+      <div id="svg-map-wrapper" className="relative flex-1 min-h-[380px] bg-slate-950 rounded border border-slate-800 overflow-hidden flex items-center justify-center p-4">
+        {/* Selector de Nivel y Elementos del Mapa Desplegable (Índice de Ruta Estructurado) */}
+        <div id="dropdown-route-index" className="absolute top-4 left-4 z-40 flex flex-col space-y-1.5 bg-slate-900/95 backdrop-blur-md p-3 rounded-lg border border-slate-800 shadow-xl min-w-[220px] pointer-events-auto">
+          {/* Etiqueta superior del selector jerárquico de ruta */}
+          <span className="text-[9px] font-bold text-slate-500 uppercase tracking-widest block">
+            Índice de Ruta / Selección
+          </span>
+          {/* Selector Unificado: Permite navegar entre niveles macro y elegir las 24 provincias reales o subdivisiones */}
+          <select
+            id="map-level-select" // Identificador HTML único para el selector desplegable
+            value={ // Valor seleccionado en tiempo real según la jerarquía activa y la provincia o subdivisión
+              selectedSubdivisionId // 1. Si hay una subdivisión activa seleccionada (ej. municipio)
+                ? selectedSubdivisionId // Utiliza la ID del municipio o subdivisión
+                : (selectedProvince && mockProvincesData[selectedProvince.id]) // 2. Si hay una de las 24 provincias seleccionadas
+                  ? selectedProvince.id // Utiliza la ID de la provincia (ej. AR-M, AR-B)
+                  : (activeMapLevel === 'pais' ? 'country' : activeMapLevel || 'country') // 3. En caso contrario, utiliza el nivel macro (world, continent, country)
+            } // Fin de la evaluación corregida y sincronizada del valor del select
+            onChange={(e) => { // Manejador de evento al cambiar la opción seleccionada por el usuario
+              const val = e.target.value; // Almacena el valor recuperado de la opción elegida
+
+              // 1. SI EL USUARIO SELECCIONA UN NIVEL MACRO (Mundo, Continente, País, Provincia, Ciudad)
+              if (val === 'world' || val === 'continent' || val === 'country' || val === 'province' || val === 'city' || val === 'neighborhood') { // Comprueba nivel macro
+                setActiveMapLevel(val); // Modifica el nivel de mapa activo en el motor de renderizado
+                setSelectedSubdivisionId(null); // Limpia la subdivisión activa previamente seleccionada
+                if (onNavigateToNode) { // Verifica si está disponible la función de navegación universal navPath
+                  const levelName = mapLevels.find(l => l.id === val)?.name || val; // Obtiene el nombre amigable del nivel
+                  onNavigateToNode({ id: val, name: levelName, type: 'macro_level' }); // Agrega el nodo jerárquico al historial navPath
+                } // Fin de comprobación onNavigateToNode
+              } // Fin del condicional de nivel macro
+              // 2. SI EL USUARIO SELECCIONA UNA PROVINCIA ARGENTINA DE LAS 24 PROVINCIAS REALES
+              else if (mockProvincesData[val]) { // Comprueba si el valor coincide con una provincia válida de Argentina
+                setActiveMapLevel('country'); // Asegura que el nivel activo permanezca en 'country' para renderizar el mapa completo de Argentina
+                const fullData = mockProvincesData[val]; // Recupera el objeto completo de la provincia seleccionada
+                onSelectProvince(fullData); // Asigna la provincia activa en el estado global
+                if (onNavigateToNode) { // Verifica la disponibilidad del manejador de navegación
+                  onNavigateToNode({ id: val, name: fullData.name, type: 'provincia' }); // Inyecta el nodo de la provincia en navPath
+                } // Fin de condicional de navegación
+                setSelectedSubdivisionId(null); // Deselecciona subdivisiones secundarias
+              } // Fin de condicional de provincia
+              // 3. SI EL USUARIO SELECCIONA UNA SUBDIVISIÓN O MUNICIPIO ESPECÍFICO
+              else { // Ejecuta la selección de subdivisión interna
+                setSelectedSubdivisionId(val); // Guarda la ID de la subdivisión seleccionada
+                const foundSub = selectedProvince.municipalities?.find(m => m.id === val); // Localiza los datos del municipio
+                if (foundSub && onNavigateToNode) { // Si existe el municipio y la función de navegación
+                  onNavigateToNode({ id: val, name: foundSub.name, type: 'subdivision' }); // Agrega la subdivisión al navPath
+                } // Fin de condicional de subdivisión
+              } // Fin del bloque condicional general
+            }} // Fin de onChange
+            className="w-full bg-slate-950 border border-slate-800 text-slate-200 text-xs font-bold rounded p-1.5 outline-none transition-all focus:border-emerald-500 cursor-pointer text-emerald-400" // Estilos Tailwind estéticos y accesibles
+          >
+            {/* GRUPO 1: VISTAS DE ALCANCE GENERAL Y NIVELES MACRO */}
+            <optgroup label="🌐 Niveles de Alcance Macro">
+              {mapLevels.map(level => ( // Mapea la lista de niveles jerárquicos disponibles
+                <option key={level.id} value={level.id}> {/* Opción con clave e ID única */}
+                  {level.id === 'world' ? '🌎 ' : // Emoji representativo para Mundo
+                   level.id === 'continent' ? '🗺️ ' : // Emoji para Continente
+                   level.id === 'country' ? '🇦🇷 ' : // Emoji para País
+                   level.id === 'province' ? '🏢 ' : // Emoji para Provincia
+                   level.id === 'city' ? '📍 ' : // Emoji para Ciudad
+                   level.id === 'neighborhood' ? '🏘️ ' : '💠 '} {/* Emoji por defecto */}
+                  {level.name} {/* Muestra el nombre legible del nivel */}
+                </option> // Fin de option
+              ))} {/* Fin del mapa de niveles */}
+            </optgroup> {/* Fin de optgroup de niveles macro */}
+
+            {/* GRUPO 2: PROVINCIAS REALES DE LA REPÚBLICA ARGENTINA (24 PROVINCIAS CATASTRALES) */}
+            <optgroup label="🇦🇷 Provincias de Argentina (24 Nodos)">
+              {Object.values(mockProvincesData).map(prov => ( // Recorre las 24 provincias argentinas registradas en la base de datos
+                <option key={prov.id} value={prov.id}> {/* Opción asignada a la provincia */}
+                  📍 {prov.name} ({prov.abbreviation}) {/* Muestra el nombre oficial y abreviatura ISO */}
+                </option> // Fin de option provincia
+              ))} {/* Fin del mapeo de provincias */}
+            </optgroup> {/* Fin de optgroup provincias */}
+
+            {/* GRUPO 3: MUNICIPIOS / SUBDIVISIONES DEL TERRITORIO SELECCIONADO */}
+            {selectedProvince && selectedProvince.municipalities && selectedProvince.municipalities.length > 0 && ( // Verifica existencia de municipios
+              <optgroup label={`🏢 Subdivisiones de ${selectedProvince.name}`}> {/* Etiqueta del grupo de subdivisiones */}
+                {selectedProvince.municipalities.map(muni => ( // Mapea los municipios de la provincia
+                  <option key={muni.id} value={muni.id}> {/* Opción para el municipio */}
+                    🔹 {muni.name} ({muni.value}%) {/* Muestra el nombre del municipio y su indicador */}
+                  </option> // Fin de option municipio
+                ))} {/* Fin de mapeo de municipios */}
+              </optgroup> // Fin de optgroup municipios
+            )} {/* Fin de evaluación condicional de municipios */}
+          </select> {/* Fin de elemento select unificado */}
+          {/* Pie informativo del selector sincronizado con navPath */}
+          <div className="flex items-center justify-between text-[8.5px] text-slate-400 mt-1">
+            {/* Indicador pulsante de sincronización activa */}
+            <span className="flex items-center space-x-1">
+              <span className="w-1.5 h-1.5 bg-emerald-400 rounded-full animate-pulse" /> {/* Círculo verde pulsante */}
+              <span>Sincronizado con navPath</span> {/* Texto de estado de sincronización */}
+            </span> {/* Fin de contenedor de estado */}
+            {/* Abreviatura del territorio activo */}
+            <span className="font-mono text-emerald-400/80 font-bold">
+              {selectedProvince ? selectedProvince.abbreviation : 'ARG'} {/* Abreviatura de la provincia */}
+            </span> {/* Fin de texto de abreviatura */}
+          </div> {/* Fin de pie informativo */}
+        </div> {/* Fin de contenedor del selector desplegable */}
+
+        {/* Estado Vacío Informativo Overlay cuando no hay vectores cargados para esta capa */}
+        {validMunicipalities.length === 0 && activeMapLevel !== 'country' && activeMapLevel !== 'pais' && (
+          <div className="absolute inset-0 z-10 flex flex-col items-center justify-center p-6 text-center pointer-events-none bg-slate-950/70 backdrop-blur-xs rounded-xl border border-dashed border-slate-800 m-3 pt-20">
+            <div className="w-10 h-10 rounded-full bg-emerald-500/10 border border-emerald-500/20 flex items-center justify-center mb-2">
+              <Layers className="w-5 h-5 text-emerald-400 animate-pulse" />
+            </div>
+            <p className="text-xs font-semibold text-slate-200">Sin mapa vectorial cargado en {mapLevels.find(l => l.id === activeMapLevel)?.name || 'esta capa'}</p>
+            <p className="text-[10px] text-slate-400 mt-1 max-w-xs leading-relaxed">
+              Utiliza el <span className="text-emerald-400 font-medium">Lienzo de Importación</span> en la pestaña "🎨 Editor Vectorial" para cargar o crear el mapa de esta región.
+            </p>
+          </div>
+        )}
 
         {/* Mapa SVG Interactivo */}
         <motion.svg
           id="argentina-svg-map"
-          viewBox={
-            activeMapLevel === 'world' ? "0 0 1024 512" :
-            activeMapLevel === 'continent' ? "0 0 800 1000" :
-            (activeMapLevel === 'country' || activeMapLevel === 'pais') ? "260 -2 440 964" :
-            (() => {
-              const selectedProvincePath = activeProvincePaths.find(p => p.id === selectedProvince.id)?.d || '';
-              const bbox = getPathBBox(selectedProvincePath);
-              const pad = 20;
-              return `${bbox.x - pad} ${bbox.y - pad} ${bbox.width + pad * 2} ${bbox.height + pad * 2}`;
-            })()
-          }
+          viewBox={dynamicViewBox}
           className="w-full h-full max-h-[500px] select-none cursor-grab active:cursor-grabbing"
           style={{
             originX: 0.5,
@@ -392,39 +697,13 @@ export default function InteractiveMap({
           }}
           transition={{ type: 'spring', damping: 25, stiffness: 150 }}
         >
-          {/* Fondo Guía del Mapamundi Lineal */}
-          {activeMapLevel === 'world' && (
-            <image
-              href="https://upload.wikimedia.org/wikipedia/commons/thumb/8/80/World_map_blank_black_white.svg/1024px-World_map_blank_black_white.svg.png"
-              x="0"
-              y="0"
-              width="1024"
-              height="512"
-              opacity="0.3"
-              className="pointer-events-none"
-            />
-          )}
-
-          {/* Fondo Guía Continental (Sudamérica) */}
-          {activeMapLevel === 'continent' && (
-            <image
-              href="https://upload.wikimedia.org/wikipedia/commons/thumb/c/cd/South_America_blank_map.svg/800px-South_America_blank_map.svg.png"
-              x="0"
-              y="0"
-              width="800"
-              height="1000"
-              opacity="0.3"
-              className="pointer-events-none"
-            />
-          )}
-
           {/* Sombra de agua / Mar Argentino en vista País */}
-          {activeMapLevel === 'country' && (
+          {(activeMapLevel === 'country' || activeMapLevel === 'pais') && (
             <rect x="260" y="-2" width="440" height="964" fill="transparent" />
           )}
 
           {/* Capas e items vectoriales según el nivel */}
-          {activeMapLevel === 'country' ? (
+          {(activeMapLevel === 'country' || activeMapLevel === 'pais') ? (
             <g id="provinces-group">
               {activeProvincePaths.map((prov) => {
                 const val = getProvinceValue(prov.id, selectedMetric);
@@ -444,6 +723,9 @@ export default function InteractiveMap({
                     onClick={() => {
                       const fullData = mockProvincesData[prov.id];
                       if (fullData) onSelectProvince(fullData);
+                      if (onNavigateToNode) {
+                        onNavigateToNode({ id: prov.id, name: prov.name, type: 'provincia' });
+                      }
                     }}
                     onMouseEnter={() => setHoveredProv(prov.id)}
                     onMouseLeave={() => setHoveredProv(null)}
@@ -472,9 +754,9 @@ export default function InteractiveMap({
                 />
               )}
 
-              {selectedProvince.municipalities.map((muni) => { // Recorre el listado de municipios o subdivisiones del territorio activo
-                if (muni.paused) return null; // Si la subdivisión está desactivada/pausada, omite su renderizado
-                const dPath = muni.d || activeProvincePaths.find(p => p.id === selectedProvince.id)?.d || ''; // Obtiene las coordenadas SVG (path) o usa la silueta de respaldo
+              {(selectedProvince.municipalities || []).map((muni) => { // Recorre el listado de municipios o subdivisiones del territorio activo
+                if (muni.paused || !muni.d || !muni.d.trim()) return null; // Solo renderiza si tiene un path SVG válido
+                const dPath = muni.d;
                 const isSelected = selectedSubdivisionId === muni.id; // Verifica si este polígono en específico está seleccionado por el usuario
                 const isHovered = hoveredMuni === muni.id; // Verifica si el puntero del mouse está flotando encima de este polígono
                 const val = muni.value; // Recupera el valor asignado de la métrica activa
@@ -482,7 +764,7 @@ export default function InteractiveMap({
                 // --- RESOLUCIÓN DINÁMICA DE ESTILOS VISUALES ---
                 const fillHex = muni.visualStyles?.fillColor || muni.color || getColorForValue(val, selectedMetric); // Prioriza el color de relleno del inspector, luego el color plano, luego el gradiente de métricas
                 const strokeHex = isSelected ? '#f59e0b' : (muni.visualStyles?.strokeColor || '#334155'); // Usa color ámbar si está seleccionado, de lo contrario prioriza el color de borde del inspector o el color oscuro por defecto
-                const strokeW = isSelected ? 2.5 : (muni.visualStyles?.strokeWidth !== undefined ? muni.visualStyles.strokeWidth : 1.2); // Usa borde grueso de 2.5px si está seleccionado, de lo contrario el ancho del inspector o 1.2px
+                const strokeW = isSelected ? dynamicStrokeUnit * 2.5 : (muni.visualStyles?.strokeWidth !== undefined ? muni.visualStyles.strokeWidth : dynamicStrokeUnit);
 
                 return ( // Retorna el elemento vectorial del polígono
                   <path
@@ -499,6 +781,9 @@ export default function InteractiveMap({
                       setEditSubPct(muni.percentage); // Configura el porcentaje provincial en el editor básico
                       if (!showManager) setShowManager(true); // Abre el panel de administración lateral si estaba cerrado
                       setManagerTab('palette'); // Se posiciona por defecto en la pestaña de edición de paletas o atributos
+                      if (onNavigateToNode) { // Verifica si está disponible el manejador de navegación universal
+                        onNavigateToNode({ id: muni.id, name: muni.name, type: 'subdivision' }); // Dispara el avance jerárquico
+                      } // Fin de evaluación onNavigateToNode
                     }}
                     onMouseEnter={() => setHoveredMuni(muni.id)} // Activa el estado flotante (hover) al entrar con el mouse
                     onMouseLeave={() => setHoveredMuni(null)} // Desactiva el estado flotante (hover) al salir con el mouse
@@ -581,7 +866,7 @@ export default function InteractiveMap({
               })
             ) : (
               /* En otros niveles, colocar un indicador en el centro de la pieza seleccionada */
-              selectedProvince.municipalities.map((muni) => {
+              (selectedProvince.municipalities || []).map((muni) => {
                 const isSelected = selectedSubdivisionId === muni.id;
                 if (!isSelected || !muni.d) return null;
 
@@ -655,12 +940,12 @@ export default function InteractiveMap({
               className="absolute bottom-4 right-4 bg-slate-950/95 backdrop-blur-md text-slate-100 px-3 py-2 rounded border border-slate-800 shadow-2xl text-xs pointer-events-none flex flex-col space-y-0.5"
             >
               <span className="font-bold text-slate-200">
-                {selectedProvince.municipalities.find(m => m.id === hoveredMuni)?.name || 'Detalle'}
+                {(selectedProvince.municipalities || []).find(m => m.id === hoveredMuni)?.name || 'Detalle'}
               </span>
               <span className="text-[10px] text-slate-400">
                 {metricLabels[selectedMetric]}:{' '}
                 <span className="font-semibold text-amber-400">
-                  {selectedProvince.municipalities.find(m => m.id === hoveredMuni)?.value}
+                  {(selectedProvince.municipalities || []).find(m => m.id === hoveredMuni)?.value}
                   {selectedMetric === 'gini' ? '' : '%'}
                 </span>
               </span>
@@ -668,31 +953,89 @@ export default function InteractiveMap({
           )}
         </AnimatePresence>
       </div>
+      )}
 
-      {/* Recuadro de Detalle: Provincia Seleccionada (Minimapa municipios) */}
+      {/* Recuadro de Detalle: Provincia Seleccionada y Silueta Aislada con Navegación Drill-down */}
       <div id="province-municipios-detail" className="bg-slate-900/40 rounded-xl border border-slate-800 p-4 shadow-sm flex flex-col">
-        <div className="flex items-center justify-between mb-3 pb-2 border-b border-slate-800">
+        {/* Encabezado del panel inferior de detalles y migas de pan locales */}
+        <div className="flex flex-col sm:flex-row sm:items-center justify-between mb-3 pb-2 border-b border-slate-800 gap-2">
+          {/* Título de la vista de alcance y migas de pan */}
           <div>
-            <h4 className="text-[10px] font-bold text-slate-500 uppercase tracking-widest">
-              Detalle: Provincia Seleccionada
+            {/* Etiqueta del nivel de detalle activo */}
+            <h4 className="text-[10px] font-black text-slate-500 uppercase tracking-widest">
+              {activeMapLevel === 'world' ? 'Detalle: Alcance Mundial' :
+               activeMapLevel === 'continent' ? 'Detalle: Alcance Continental' :
+               activeMapLevel === 'country' ? 'Detalle: Alcance Nacional / País' :
+               activeMapLevel === 'province' ? 'Detalle: Alcance Provincial' :
+               'Detalle: Territorio Seleccionado'}
             </h4>
-            <h2 className="text-xl font-serif italic text-emerald-400 flex items-center mt-0.5">
-              <MapPin size={16} className="text-emerald-500 mr-1.5" />
-              NACIÓN &gt; {selectedProvince.name.toUpperCase()}
+            {/* Título del territorio con enlaces de navegación */}
+            <h2 className="text-sm font-bold text-emerald-400 flex flex-wrap items-center mt-1 font-mono tracking-tight gap-1">
+              <MapPin size={14} className="text-emerald-500 mr-1 shrink-0" /> {/* Icono de pin de ubicación */}
+              {navigationPath.length > 0 ? ( // Si existe un camino regional activo
+                navigationPath.map((node, index) => { // Recorre cada nodo del camino
+                  const isLast = index === navigationPath.length - 1; // Verifica si es el último nodo
+                  return ( // Renderiza el botón del eslabón de la miga de pan
+                    <span key={node.id} className="flex items-center">
+                      <button // Botón navegable del eslabón
+                        onClick={() => onBreadcrumbClick && onBreadcrumbClick(index)} // Llama al manejador de clic en miga de pan
+                        disabled={isLast || !onBreadcrumbClick} // Deshabilita si es la posición actual
+                        className={`transition-all font-bold ${
+                          isLast
+                            ? 'text-emerald-400 font-extrabold cursor-default' // Estilo activo
+                            : 'text-slate-400 hover:text-slate-200 hover:underline cursor-pointer' // Estilo navegable
+                        }`}
+                      >
+                        {node.name.toUpperCase()} {/* Nombre del nodo en mayúsculas */}
+                      </button>
+                      {!isLast && <span className="text-slate-600 mx-1 font-sans text-xs">{'>'}</span>} {/* Separador */}
+                    </span>
+                  ); // Fin de la renderización del eslabón
+                })
+              ) : ( // Si no hay camino regional
+                selectedProvince.name.toUpperCase() // Muestra el nombre de la provincia seleccionada
+              )}
             </h2>
           </div>
+
+          {/* Botones de acción del panel inferior: Drill-down a municipios y Gestor de Capas */}
           <div className="flex items-center space-x-2">
+            {/* Botón de navegación hacia adentro (Drill-down) a nivel de provincia / municipios */}
             <button
-              onClick={() => setShowManager(!showManager)}
+              id="btn-drill-down" // Identificador HTML único del botón de navegación hacia adentro
+              onClick={() => { // Manejador de evento para profundizar hacia el nivel provincia
+                if (activeMapLevel === 'country' || activeMapLevel === 'pais') { // Si estamos en nivel de país
+                  setActiveMapLevel('province'); // Modifica el nivel de mapa activo a Provincia
+                  setSelectedSubdivisionId(null); // Resetea subdivisiones
+                  if (onNavigateToNode) { // Notifica al motor universal navPath
+                    onNavigateToNode({ id: selectedProvince.id, name: selectedProvince.name, type: 'drill_down_provincia' }); // Agrega el nodo de la provincia al historial
+                  } // Fin de verificación onNavigateToNode
+                } else if (activeMapLevel === 'province') { // Si ya estamos en nivel de provincia
+                  setActiveMapLevel('country'); // Regresa al nivel de País
+                } // Fin del condicional de nivel
+              }} // Fin de onClick
+              className="flex items-center space-x-1.5 text-[10px] font-bold border border-emerald-500/50 bg-emerald-950/40 text-emerald-400 hover:bg-emerald-900/60 px-2.5 py-1.5 rounded transition-all cursor-pointer shadow-sm" // Estilos Tailwind llamativos y elegantes
+              title={activeMapLevel === 'province' ? 'Volver a ver el país completo' : `Ver división municipal de ${selectedProvince.name}`} // Título emergente
+            >
+              <Navigation size={12} className="text-emerald-400 shrink-0" /> {/* Icono de navegación */}
+              <span>
+                {activeMapLevel === 'province' ? 'VER PAÍS COMPLETO' : `EXPLORAR ${selectedProvince.abbreviation}`} {/* Texto dinámico del botón */}
+              </span>
+            </button>
+
+            {/* Botón para desplegar el gestor de capas y herramientas de edición */}
+            <button
+              onClick={() => setShowManager(!showManager)} // Alterna la visibilidad del gestor
               className={`flex items-center space-x-1.5 text-[10px] font-bold border rounded px-2.5 py-1.5 transition-all cursor-pointer ${
                 showManager 
-                  ? 'bg-emerald-500/10 border-emerald-500 text-emerald-400 shadow-emerald-950/20' 
-                  : 'bg-slate-950 border-slate-800 hover:border-slate-700 text-slate-400 hover:text-slate-200'
+                  ? 'bg-emerald-500/10 border-emerald-500 text-emerald-400 shadow-emerald-950/20' // Estilo activo
+                  : 'bg-slate-950 border-slate-800 hover:border-slate-700 text-slate-400 hover:text-slate-200' // Estilo inactivo
               }`}
             >
-              <Settings size={12} className={showManager ? 'animate-spin' : ''} />
-              <span>GESTOR DE CAPAS</span>
+              <Settings size={12} className={showManager ? 'animate-spin' : ''} /> {/* Icono de configuración */}
+              <span>GESTOR DE CAPAS</span> {/* Etiqueta del botón de gestor */}
             </button>
+            {/* Insignia indicadora de vectores */}
             <span className="text-[10px] bg-slate-950 border border-slate-800 text-slate-500 font-bold px-2 py-1 rounded uppercase">
               Vectores
             </span>
@@ -712,14 +1055,6 @@ export default function InteractiveMap({
               {/* Pestañas (Tabs) */}
               <div className="flex space-x-1 border-b border-slate-900 pb-1.5">
                 <button
-                  onClick={() => setManagerTab('import')}
-                  className={`text-[10px] font-bold px-2.5 py-1 rounded transition-colors cursor-pointer ${
-                    managerTab === 'import' ? 'bg-slate-900 text-emerald-400 border border-slate-800' : 'text-slate-500 hover:text-slate-300'
-                  }`}
-                >
-                  📥 Importar & Escalar
-                </button>
-                <button
                   onClick={() => setManagerTab('palette')}
                   className={`text-[10px] font-bold px-2.5 py-1 rounded transition-colors cursor-pointer ${
                     managerTab === 'palette' ? 'bg-slate-900 text-emerald-400 border border-slate-800' : 'text-slate-500 hover:text-slate-300'
@@ -736,152 +1071,6 @@ export default function InteractiveMap({
                   📋 Estructura ({selectedProvince.municipalities.length})
                 </button>
               </div>
-
-              {/* Contenido Pestaña 1: Importar y Escalar */}
-              {managerTab === 'import' && (
-                <div className="flex flex-col space-y-3.5 text-xs">
-                  <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
-                    <div className="flex flex-col space-y-1">
-                      <div className="flex justify-between text-[10px] text-slate-500 font-bold uppercase">
-                        <span>Escala</span>
-                        <span className="text-emerald-400">{miniScale.toFixed(2)}x</span>
-                      </div>
-                      <input
-                        type="range"
-                        min="0.1"
-                        max="10.0"
-                        step="0.05"
-                        value={miniScale}
-                        onChange={(e) => {
-                          const s = parseFloat(e.target.value);
-                          setMiniScale(s);
-                          updateProvince({ mapTransform: { scale: s, panX: miniPanX, panY: miniPanY } });
-                        }}
-                        className="w-full accent-emerald-500 cursor-pointer bg-slate-900 h-1.5 rounded-lg appearance-none"
-                      />
-                    </div>
-                    <div className="flex flex-col space-y-1">
-                      <div className="flex justify-between text-[10px] text-slate-500 font-bold uppercase">
-                        <span>Desplazar X</span>
-                        <span className="text-emerald-400">{miniPanX}px</span>
-                      </div>
-                      <input
-                        type="range"
-                        min="-2000"
-                        max="2000"
-                        step="1"
-                        value={miniPanX}
-                        onChange={(e) => {
-                          const px = parseInt(e.target.value);
-                          setMiniPanX(px);
-                          updateProvince({ mapTransform: { scale: miniScale, panX: px, panY: miniPanY } });
-                        }}
-                        className="w-full accent-emerald-500 cursor-pointer bg-slate-900 h-1.5 rounded-lg appearance-none"
-                      />
-                    </div>
-                    <div className="flex flex-col space-y-1">
-                      <div className="flex justify-between text-[10px] text-slate-500 font-bold uppercase">
-                        <span>Desplazar Y</span>
-                        <span className="text-emerald-400">{miniPanY}px</span>
-                      </div>
-                      <input
-                        type="range"
-                        min="-2000"
-                        max="2000"
-                        step="1"
-                        value={miniPanY}
-                        onChange={(e) => {
-                          const py = parseInt(e.target.value);
-                          setMiniPanY(py);
-                          updateProvince({ mapTransform: { scale: miniScale, panX: miniPanX, panY: py } });
-                        }}
-                        className="w-full accent-emerald-500 cursor-pointer bg-slate-900 h-1.5 rounded-lg appearance-none"
-                      />
-                    </div>
-                  </div>
-
-                  <div className="flex flex-col space-y-1">
-                    <span className="text-[10px] text-slate-500 font-bold uppercase">Importar Nuevos Vectores</span>
-                    <textarea
-                      value={importText}
-                      onChange={(e) => setImportText(e.target.value)}
-                      placeholder='Pega código SVG d="..." o JSON completo: [{"id":"z1","name":"Región A","d":"M..."}]'
-                      className="w-full h-16 bg-slate-900 border border-slate-800 rounded p-2 text-[10px] font-mono text-slate-300 focus:outline-none focus:border-slate-700"
-                    />
-                  </div>
-
-                  <div className="flex justify-between items-center pt-1">
-                    <button
-                      onClick={() => {
-                        if (selectedProvince.id === 'AR-MLV') {
-                          setMiniScale(2.2);
-                          setMiniPanX(-1218);
-                          setMiniPanY(-1715);
-                          updateProvince({ mapTransform: { scale: 2.2, panX: -1218, panY: -1715 } });
-                        } else {
-                          setMiniScale(1.0);
-                          setMiniPanX(0);
-                          setMiniPanY(0);
-                          updateProvince({ mapTransform: { scale: 1.0, panX: 0, panY: 0 } });
-                        }
-                      }}
-                      className="text-[10px] bg-slate-900 border border-slate-850 hover:border-slate-700 text-slate-400 hover:text-slate-200 px-3 py-1.5 rounded cursor-pointer transition-colors"
-                    >
-                      Centrado Inicial Preset
-                    </button>
-
-                    <button
-                      onClick={() => {
-                        if (!importText.trim()) return;
-                        try {
-                          if (importText.trim().startsWith('[')) {
-                            // Parse list
-                            const parsed = JSON.parse(importText);
-                            if (Array.isArray(parsed)) {
-                              const valid = parsed.map((item, idx) => ({
-                                id: item.id || `muni_${Date.now()}_${idx}`,
-                                name: item.name || `Subdivisión ${idx + 1}`,
-                                value: item.value !== undefined ? item.value : 35,
-                                percentage: item.percentage !== undefined ? item.percentage : 10,
-                                d: item.d
-                              }));
-                              updateProvince({ municipalities: valid });
-                              setImportText('');
-                              alert("¡Vectores JSON cargados exitosamente!");
-                            }
-                          } else {
-                            // Single raw path
-                            if (selectedSubdivisionId) {
-                              updateMunicipality(selectedSubdivisionId, { d: importText.trim() });
-                              setImportText('');
-                              alert("¡Ruta SVG asignada a la subdivisión seleccionada!");
-                            } else {
-                              // Create new one with the path
-                              const newId = `sub_${Date.now()}`;
-                              const newSub = {
-                                id: newId,
-                                name: `Nueva Zona Importada`,
-                                value: 40,
-                                percentage: 12,
-                                d: importText.trim()
-                              };
-                              updateProvince({ municipalities: [...selectedProvince.municipalities, newSub] });
-                              setSelectedSubdivisionId(newId);
-                              setImportText('');
-                              alert("¡Nueva subdivisión creada con el vector SVG proporcionado!");
-                            }
-                          }
-                        } catch (err) {
-                          alert("Error al importar: Asegúrate de que el formato sea un JSON válido o una ruta SVG 'd' válida.");
-                        }
-                      }}
-                      className="text-[10px] bg-emerald-600 hover:bg-emerald-500 text-slate-950 font-bold px-4 py-1.5 rounded cursor-pointer transition-colors"
-                    >
-                      Procesar & Aplicar
-                    </button>
-                  </div>
-                </div>
-              )}
 
               {/* Contenido Pestaña 2: Pintar y Datos */}
               {managerTab === 'palette' && (
@@ -1207,7 +1396,11 @@ export default function InteractiveMap({
           {/* List of Regions / Municipalities with progress bars */}
           <div className="flex-1 w-full flex flex-col space-y-2 h-44 overflow-y-auto pr-1">
             <span className="text-[10px] text-slate-500 font-bold uppercase tracking-widest">
-              Distribución Regional de {metricLabels[selectedMetric]}
+              {activeMapLevel === 'world' || activeMapLevel === 'continent'
+                ? `Distribución por Países de ${metricLabels[selectedMetric]}`
+                : activeMapLevel === 'country'
+                ? `Distribución Provincial de ${metricLabels[selectedMetric]}`
+                : `Distribución Regional de ${metricLabels[selectedMetric]}`}
             </span>
             <div className="space-y-2">
               {selectedProvince.municipalities.map((muni) => (

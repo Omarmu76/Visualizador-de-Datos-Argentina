@@ -344,10 +344,10 @@ export default function WorkspaceHub({
         [],
         ['Indicadores Clave'],
         ['Métrica', 'Valor Porcentual', 'Nivel de Riesgo'],
-        ['Pobreza', `${selectedProvince.socialEmployment.pobreza.toFixed(1)}%`, selectedProvince.socialEmployment.pobreza > 45 ? 'Alto' : 'Moderado'],
-        ['Desempleo', `${selectedProvince.socialEmployment.desempleo.toFixed(1)}%`, selectedProvince.socialEmployment.desempleo > 10 ? 'Alto' : 'Bajo'],
-        ['Gini', `${selectedProvince.economicProfile.gini}%`, 'Estándar'],
-        ['Empleo Informal', `${selectedProvince.socialEmployment.informalEmployment}%`, 'Mercado'],
+        ['Pobreza', `${(selectedProvince.socialEmployment?.pobreza ?? 0).toFixed(1)}%`, (selectedProvince.socialEmployment?.pobreza ?? 0) > 45 ? 'Alto' : 'Moderado'],
+        ['Desempleo', `${(selectedProvince.socialEmployment?.desempleo ?? 0).toFixed(1)}%`, (selectedProvince.socialEmployment?.desempleo ?? 0) > 10 ? 'Alto' : 'Bajo'],
+        ['Gini', `${selectedProvince.economicProfile?.gini ?? 0}%`, 'Estándar'],
+        ['Empleo Informal', `${selectedProvince.socialEmployment?.informalEmployment ?? 0}%`, 'Mercado'],
         [],
         ['Estadísticas Detalladas de Municipios / Subdivisiones'],
         ['ID de la Subdivisión', 'Nombre del Municipio', 'Métrica de Valor', 'Porcentaje de Carga', 'Estado Operativo', 'Color Pintado'],
@@ -409,19 +409,19 @@ export default function WorkspaceHub({
         `    </tr>`,
         `    <tr>`,
         `      <td style="padding: 8px; border: 1px solid #334155;">Pobreza</td>`,
-        `      <td style="padding: 8px; border: 1px solid #334155; font-weight: bold; color: #ef4444;">${selectedProvince.socialEmployment.pobreza.toFixed(1)}%</td>`,
+        `      <td style="padding: 8px; border: 1px solid #334155; font-weight: bold; color: #ef4444;">${(selectedProvince.socialEmployment?.pobreza ?? 0).toFixed(1)}%</td>`,
         `    </tr>`,
         `    <tr>`,
         `      <td style="padding: 8px; border: 1px solid #334155;">Desempleo</td>`,
-        `      <td style="padding: 8px; border: 1px solid #334155; font-weight: bold; color: #f59e0b;">${selectedProvince.socialEmployment.desempleo.toFixed(1)}%</td>`,
+        `      <td style="padding: 8px; border: 1px solid #334155; font-weight: bold; color: #f59e0b;">${(selectedProvince.socialEmployment?.desempleo ?? 0).toFixed(1)}%</td>`,
         `    </tr>`,
         `    <tr>`,
         `      <td style="padding: 8px; border: 1px solid #334155;">Coeficiente Gini</td>`,
-        `      <td style="padding: 8px; border: 1px solid #334155; font-weight: bold;">${selectedProvince.economicProfile.gini}%</td>`,
+        `      <td style="padding: 8px; border: 1px solid #334155; font-weight: bold;">${selectedProvince.economicProfile?.gini ?? 0}%</td>`,
         `    </tr>`,
         `    <tr>`,
         `      <td style="padding: 8px; border: 1px solid #334155;">PIB Provincial</td>`,
-        `      <td style="padding: 8px; border: 1px solid #334155; font-weight: bold; color: #10b981;">${selectedProvince.economicProfile.pib}</td>`,
+        `      <td style="padding: 8px; border: 1px solid #334155; font-weight: bold; color: #10b981;">${selectedProvince.economicProfile?.pib ?? 'N/A'}</td>`,
         `    </tr>`,
         `  </table>`,
         `  <h3 style="color: #34d399; margin-top: 20px;">Municipios e Historial:</h3>`,
@@ -473,7 +473,7 @@ export default function WorkspaceHub({
       const event = {
         summary: `Reunión de Análisis Federal: ${selectedProvince.name}`,
         location: 'Sala de Conferencias Virtual de Indicadores',
-        description: `Discusión del tablero económico de ${selectedProvince.name}.\n\nIndicadores de Referencia:\n- Pobreza: ${selectedProvince.socialEmployment.pobreza.toFixed(1)}%\n- Desempleo: ${selectedProvince.socialEmployment.desempleo.toFixed(1)}%\n- Gini: ${selectedProvince.economicProfile.gini}%`,
+        description: `Discusión del tablero económico de ${selectedProvince.name}.\n\nIndicadores de Referencia:\n- Pobreza: ${(selectedProvince.socialEmployment?.pobreza ?? 0).toFixed(1)}%\n- Desempleo: ${(selectedProvince.socialEmployment?.desempleo ?? 0).toFixed(1)}%\n- Gini: ${selectedProvince.economicProfile?.gini ?? 0}%`,
         start: { dateTime: startDateTime.toISOString() },
         end: { dateTime: endDateTime.toISOString() },
         reminders: { useDefault: true }
@@ -526,14 +526,14 @@ export default function WorkspaceHub({
       const headerText = `PLANILLA DE REPORTE ESTADÍSTICO GUBERNAMENTAL\nPROVINCIA DE ${selectedProvince.name.toUpperCase()}\n\n`;
       const bodyText = `Este informe detalla las métricas de desarrollo socio-económico registradas en la región de ${selectedProvince.name} (${selectedProvince.abbreviation}).\n\n` +
         `1. PRINCIPALES INDICADORES ECONÓMICOS:\n` +
-        `  - Coeficiente de Concentración de Gini: ${selectedProvince.economicProfile.gini}%\n` +
-        `  - Producto Interno Bruto Estimado: ${selectedProvince.economicProfile.pib}\n` +
-        `  - Salario Medio Registrado: ${selectedProvince.economicProfile.averageSalary}\n\n` +
+        `  - Coeficiente de Concentración de Gini: ${selectedProvince.economicProfile?.gini ?? 0}%\n` +
+        `  - Producto Interno Bruto Estimado: ${selectedProvince.economicProfile?.pib ?? 'N/A'}\n` +
+        `  - Salario Medio Registrado: ${selectedProvince.economicProfile?.averageSalary ?? 'N/A'}\n\n` +
         `2. SITUACIÓN LABORAL Y MARGEN SOCIAL:\n` +
-        `  - Índice de Pobreza Extrema/Multidimensional: ${selectedProvince.socialEmployment.pobreza.toFixed(1)}%\n` +
-        `  - Tasa de Desempleo Activa: ${selectedProvince.socialEmployment.desempleo.toFixed(1)}%\n` +
-        `  - Empleo No Registrado o Informal: ${selectedProvince.socialEmployment.informalEmployment}%\n` +
-        `  - Informalidad en Jóvenes (18-25): ${selectedProvince.socialEmployment.youthInformality}%\n\n` +
+        `  - Índice de Pobreza Extrema/Multidimensional: ${(selectedProvince.socialEmployment?.pobreza ?? 0).toFixed(1)}%\n` +
+        `  - Tasa de Desempleo Activa: ${(selectedProvince.socialEmployment?.desempleo ?? 0).toFixed(1)}%\n` +
+        `  - Empleo No Registrado o Informal: ${selectedProvince.socialEmployment?.informalEmployment ?? 0}%\n` +
+        `  - Informalidad en Jóvenes (18-25): ${selectedProvince.socialEmployment?.youthInformality ?? 0}%\n\n` +
         `3. DETALLE POR MUNICIPIO / DIVISIÓN DE INTERÉS:\n` +
         (selectedProvince.municipalities?.map(m => `  - ${m.name}: ${m.value}% (Participación: ${m.percentage}%, Estado: ${m.paused ? 'PAUSADO' : 'ACTIVO'})`).join('\n') || 'Ninguno') +
         `\n\nGenerado de forma automática el: ${new Date().toUTCString()} desde la Plataforma de Datos Federales.`;
@@ -582,10 +582,10 @@ export default function WorkspaceHub({
     try {
       const msg = {
         text: `📊 *Alerta Federal de Datos:* Se ha actualizado el perfil de la provincia *${selectedProvince.name}*.\n` +
-          `• *Pobreza:* ${selectedProvince.socialEmployment.pobreza.toFixed(1)}%\n` +
-          `• *Desempleo:* ${selectedProvince.socialEmployment.desempleo.toFixed(1)}%\n` +
-          `• *Gini:* ${selectedProvince.economicProfile.gini}%\n` +
-          `• *Salario Medio:* ${selectedProvince.economicProfile.averageSalary}\n` +
+          `• *Pobreza:* ${(selectedProvince.socialEmployment?.pobreza ?? 0).toFixed(1)}%\n` +
+          `• *Desempleo:* ${(selectedProvince.socialEmployment?.desempleo ?? 0).toFixed(1)}%\n` +
+          `• *Gini:* ${selectedProvince.economicProfile?.gini ?? 0}%\n` +
+          `• *Salario Medio:* ${selectedProvince.economicProfile?.averageSalary ?? 'N/A'}\n` +
           `Sincronizado vía Cloud SQL.`
       };
 
@@ -632,9 +632,9 @@ export default function WorkspaceHub({
       if (data.values && data.values.length > 0) {
         addLog('Planilla descargada con éxito. Interpretando indicadores para la provincia activa...');
         
-        let povertyVal = selectedProvince.socialEmployment.pobreza;
-        let unemploymentVal = selectedProvince.socialEmployment.desempleo;
-        let giniVal = selectedProvince.economicProfile.gini;
+        let povertyVal = selectedProvince.socialEmployment?.pobreza ?? 0;
+        let unemploymentVal = selectedProvince.socialEmployment?.desempleo ?? 0;
+        let giniVal = selectedProvince.economicProfile?.gini ?? 0;
 
         data.values.forEach((row: string[]) => {
           if (row[0]) {
@@ -681,15 +681,15 @@ export default function WorkspaceHub({
       `Generado el: ${new Date().toLocaleString()}\n` +
       `Provincia: ${selectedProvince.name} (${selectedProvince.abbreviation})\n\n` +
       `--- INDICADORES GENERALES ---\n` +
-      `- Coeficiente de Concentración Gini: ${selectedProvince.economicProfile.gini}%\n` +
-      `- Producto Interno Bruto Provincial (PIB): ${selectedProvince.economicProfile.pib}\n` +
-      `- Salario Medio Registrado: ${selectedProvince.economicProfile.averageSalary}\n` +
-      `- Gasto Social Asignado: ${selectedProvince.budgetSpending.socialSpending.map(s => `${s.name}: ${s.value}%`).join(', ')}\n\n` +
+      `- Coeficiente de Concentración Gini: ${selectedProvince.economicProfile?.gini ?? 0}%\n` +
+      `- Producto Interno Bruto Provincial (PIB): ${selectedProvince.economicProfile?.pib ?? 'N/A'}\n` +
+      `- Salario Medio Registrado: ${selectedProvince.economicProfile?.averageSalary ?? 'N/A'}\n` +
+      `- Gasto Social Asignado: ${(selectedProvince.budgetSpending?.socialSpending || []).map(s => `${s.name}: ${s.value}%`).join(', ')}\n\n` +
       `--- SITUACIÓN SOCIAL Y LABORAL ---\n` +
-      `- Índice de Pobreza: ${selectedProvince.socialEmployment.pobreza.toFixed(1)}%\n` +
-      `- Índice de Desempleo Activo: ${selectedProvince.socialEmployment.desempleo.toFixed(1)}%\n` +
-      `- Tasa de Empleo Informal: ${selectedProvince.socialEmployment.informalEmployment}%\n` +
-      `- Tasa de Informalidad Juvenil: ${selectedProvince.socialEmployment.youthInformality}%\n\n` +
+      `- Índice de Pobreza: ${(selectedProvince.socialEmployment?.pobreza ?? 0).toFixed(1)}%\n` +
+      `- Índice de Desempleo Activo: ${(selectedProvince.socialEmployment?.desempleo ?? 0).toFixed(1)}%\n` +
+      `- Tasa de Empleo Informal: ${selectedProvince.socialEmployment?.informalEmployment ?? 0}%\n` +
+      `- Tasa de Informalidad Juvenil: ${selectedProvince.socialEmployment?.youthInformality ?? 0}%\n\n` +
       `--- DETALLE DE SUBDIVISIONES Y MUNICIPIOS ---\n` +
       (selectedProvince.municipalities?.map(m => `* ${m.name}: ${m.value}% (Porcentaje de Carga: ${m.percentage}%, Estado: ${m.paused ? 'Inactivo' : 'Activo'}, Color: ${m.color || 'Predeterminado'})`).join('\n') || 'No se han registrado municipios.') +
       `\n\n=== FIN DEL INFORME FEDERAL ===`;

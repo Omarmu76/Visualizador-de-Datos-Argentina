@@ -1,55 +1,92 @@
-import React, { useEffect, useState } from 'react'; // Importación de React, hooks de ciclo de vida (useEffect) y de estado (useState)
+import React from 'react'; // Importación de la librería principal React
+import { Navigate, Outlet } from 'react-router-dom'; // Importación de componentes de navegación de React Router
+import { UserRole } from '../types'; // Importación del tipo UserRole para control de acceso basado en roles (RBAC)
 
 // Interfaz para definir las propiedades (Props) del componente de Ruta Protegida
-interface ProtectedRouteProps {
-  children: React.ReactNode; // Elementos hijos que serán renderizados si el usuario está autenticado como administrador
+interface ProtectedRouteProps { // Propiedades aceptadas por el componente
+  children?: React.ReactNode; // Elementos hijos que serán renderizados opcionalmente
+  isAdmin?: boolean; // Compatibilidad con bandera booleana de administrador
+  userRole?: UserRole | string; // Rol actual del usuario ('guest' | 'pro' | 'admin' o 'USER' | 'ADMIN' | 'SUPER_ADMIN')
+  requiredRole?: 'pro' | 'admin' | 'SUPER_ADMIN' | 'ADMIN' | 'USER'; // Rol individual mínimo requerido
+  allowedRoles?: string[]; // Lista explícita de roles autorizados para ingresar a la ruta
 }
 
-// Componente ProtectedRoute para asegurar que solo los administradores accedan a la configuración de calibración
-export default function ProtectedRoute({ children }: ProtectedRouteProps) {
-  // Estado para controlar si el usuario está actualmente autenticado
-  const [isAuthenticated, setIsAuthenticated] = useState<boolean>(true); // Se inicia en true por defecto para simular la sesión activa
+// Componente ProtectedRoute para asegurar que solo usuarios autenticados con los roles adecuados accedan
+export default function ProtectedRoute({ // Exportación del componente principal
+  children, // Contenido hijo explícito
+  isAdmin = false, // Valor predeterminado para el flag de admin
+  userRole, // Rol de la sesión actual
+  requiredRole, // Rol requerido
+  allowedRoles // Arreglo de roles permitidos
+}: ProtectedRouteProps) { // Firma de la función
+  
+  // Normalización del rol activo actual del usuario a formato en mayúsculas o estándar
+  const rawRole = userRole || (isAdmin ? 'ADMIN' : 'GUEST'); // Obtiene el valor crudo del rol o infiere según isAdmin
+  const normalizedUserRole = String(rawRole).toUpperCase(); // Convierte el rol a mayúsculas para comparación uniforme
 
-  // Efecto para sincronizar o leer el estado de autenticación real del sistema
-  useEffect(() => {
-    // Intentamos recuperar la variable de sesión de administrador desde el localStorage local
-    const adminSession = localStorage.getItem('argentina_admin_logged'); // Busca la marca de login 'argentina_admin_logged'
-    
-    // Si la marca existe y es 'true', confirmamos la autenticación
-    if (adminSession === 'true') {
-      setIsAuthenticated(true); // Actualiza el estado a verdadero para dar paso
-    } else {
-      // TODO: Aquí se puede conectar el observador oficial de Firebase Auth: onAuthStateChanged(auth, (user) => { ... })
-      // Por defecto, dejamos habilitado para la simulación fluida en el entorno de previsualización
-      setIsAuthenticated(true); // Mantenemos la simulación amigable
+  // Mapeo de compatibilidad entre nombres de roles ('guest' -> 'USER', 'pro' -> 'ADMIN', 'admin' -> 'SUPER_ADMIN' / 'ADMIN')
+  const mappedRole = normalizedUserRole === 'GUEST' ? 'USER' 
+    : normalizedUserRole === 'PRO' ? 'ADMIN' 
+    : normalizedUserRole === 'ADMIN' ? 'SUPER_ADMIN' 
+    : normalizedUserRole; // Asigna el rol mapeado estandarizado
+
+  // Determinación de la autorización de acceso
+  let hasPermission = false; // Variable para almacenar si el usuario tiene permiso de ingreso
+
+  if (allowedRoles && allowedRoles.length > 0) { // Si se proveyó una lista explícita de allowedRoles
+    // Comprueba si el rol mapeado o el rol normalizado coincide con alguno de la lista permitida
+    hasPermission = allowedRoles.map(r => r.toUpperCase()).includes(normalizedUserRole) ||
+                    allowedRoles.map(r => r.toUpperCase()).includes(mappedRole); // Evalúa coincidencia en allowedRoles
+  } else if (requiredRole) { // Si se especificó requiredRole
+    const normalizedRequired = requiredRole.toUpperCase(); // Normaliza el rol requerido a mayúsculas
+    if (normalizedRequired === 'PRO') { // Si se requiere nivel PRO
+      hasPermission = normalizedUserRole === 'PRO' || normalizedUserRole === 'ADMIN' || normalizedUserRole === 'SUPER_ADMIN'; // Permite PRO, ADMIN y SUPER_ADMIN
+    } else if (normalizedRequired === 'ADMIN' || normalizedRequired === 'SUPER_ADMIN') { // Si se requiere nivel ADMIN o SUPER_ADMIN
+      hasPermission = normalizedUserRole === 'ADMIN' || normalizedUserRole === 'SUPER_ADMIN'; // Permite ADMIN y SUPER_ADMIN
+    } else { // Para otros roles requeridos
+      hasPermission = normalizedUserRole === normalizedRequired || mappedRole === normalizedRequired; // Evalúa igualdad directa
     }
-  }, []); // El arreglo vacío indica que este efecto se ejecuta una sola vez al montar el componente
-
-  // Si no está autenticado, redirige automáticamente o muestra un mensaje de restricción de acceso
-  if (!isAuthenticated) {
-    return (
-      <div className="min-h-screen bg-slate-950 flex flex-col items-center justify-center p-6 text-center"> {/* Contenedor centrado oscuro */}
-        <div className="bg-slate-900 border border-red-500/30 p-8 rounded-2xl max-w-md shadow-2xl relative"> {/* Tarjeta con borde rojo de advertencia */}
-          <span className="text-4xl block mb-3">⚠️</span> {/* Ícono de alerta */}
-          <h2 className="text-xl font-serif text-red-400 font-bold mb-2">Acceso Restringido - Administrador</h2> {/* Título de acceso restringido */}
-          <p className="text-xs text-slate-400 mb-6">
-            Para modificar el alcance del mapa, calibrar coordenadas SVG, ajustar vértices de parcelas o editar estilos visuales, necesitas iniciar sesión.
-          </p> {/* Descripción explicativa */}
-          <button
-            onClick={() => {
-              // Simulación rápida de inicio de sesión administrativo para propósitos de prueba
-              localStorage.setItem('argentina_admin_logged', 'true'); // Persiste la sesión simulada en localStorage
-              setIsAuthenticated(true); // Cambia el estado para desbloquear la vista de inmediato
-            }}
-            className="w-full py-2.5 bg-red-500/10 hover:bg-red-500/20 text-red-400 border border-red-500/30 hover:border-red-500/50 rounded-xl text-xs font-black uppercase tracking-wider transition-all cursor-pointer"
-          >
-            Iniciar Sesión como Administrador (Simulado)
-          </button> {/* Botón de acción para el desarrollador */}
-        </div>
-      </div>
-    );
+  } else { // Si no se especificaron restricciones explícitas
+    hasPermission = normalizedUserRole === 'ADMIN' || normalizedUserRole === 'SUPER_ADMIN' || normalizedUserRole === 'PRO'; // Permite acceso si es usuario registrado/admin
   }
 
-  // Si la autenticación es correcta, renderiza los componentes del panel de administración
-  return <>{children}</>; // Retorna los elementos protegidos
-}
+  // Si el usuario no cumple los requisitos de rol, redirige o muestra pantalla de acceso denegado
+  if (!hasPermission) { // Si no posee autorización
+    return ( // Renderiza la tarjeta de advertencia RBAC
+      <div className="min-h-[60vh] bg-slate-950 flex flex-col items-center justify-center p-6 text-center"> {/* Contenedor centrado */}
+        <div className="bg-slate-900 border border-amber-500/30 p-8 rounded-2xl max-w-md shadow-2xl relative"> {/* Tarjeta de advertencia */}
+          {/* Resplandor decorativo de fondo */}
+          <div className="absolute inset-0 bg-amber-500/5 rounded-2xl blur-xl -z-10" />
+          
+          <span className="text-4xl block mb-3 animate-bounce">🔒</span> {/* Ícono animado de candado */}
+          <h2 className="text-xl font-sans text-amber-400 font-bold mb-2 uppercase tracking-wide">
+            Acceso Restringido ({allowedRoles ? allowedRoles.join(' / ') : requiredRole || 'ADMIN'})
+          </h2> {/* Título dinámico mostrando los roles requeridos */}
+          
+          <p className="text-xs text-slate-400 mb-6 leading-relaxed">
+            Esta sección requiere permisos privilegiados ({allowedRoles ? allowedRoles.join(', ') : requiredRole || 'ADMIN'}). Permite editar espacios de trabajo, personalizar capas vectoriales y gestionar la jerarquía del mapa.
+          </p> {/* Explicación del nivel de acceso */}
+          
+          <div className="p-4 bg-slate-950 rounded-xl border border-slate-800 text-left space-y-2 mb-4"> {/* Panel de rol actual */}
+            <h3 className="text-[10px] text-slate-400 uppercase font-black tracking-widest">Tu Rol Actual</h3> {/* Encabezado de estado */}
+            <p className="text-[11px] text-emerald-400 font-bold uppercase tracking-wider">
+              👤 {normalizedUserRole} ({mappedRole})
+            </p> {/* Muestra el rol actual detectado */}
+            <p className="text-[10px] text-slate-500 leading-normal">
+              Puedes cambiar tu nivel de usuario o iniciar sesión desde el menú de perfil en el encabezado.
+            </p> {/* Instrucciones para cambiar de perfil */}
+          </div>
+        </div>
+      </div>
+    ); // Fin de renderizado de tarjeta
+  }
+
+  // Si la validación de rol es exitosa, renderiza los elementos hijos o el componente de Outlet de React Router
+  return children ? <>{children}</> : <Outlet />; // Retorna children si existen o la salida Outlet
+} // Fin del componente ProtectedRoute
+
+// Exportación nombrada para compatibilidad con imports de { ProtectedRoute }
+export { ProtectedRoute };
+
+
+
