@@ -247,7 +247,14 @@ export default function DataPanel({
         </motion.div>
       )}
       {/* Encabezado del Sector de Datos con Indicación de Vista Actual Master */}
-      <div id="data-panel-header" className="bg-slate-900/40 rounded-xl border border-slate-800 p-4 shadow-xs flex flex-col md:flex-row md:items-center justify-between gap-3">
+      <motion.div
+        key={province.id}
+        initial={{ opacity: 0, y: 10 }}
+        animate={{ opacity: 1, y: 0 }}
+        transition={{ duration: 0.25 }}
+        className="flex flex-col space-y-4"
+      >
+        <div id="data-panel-header" className="bg-slate-900/40 rounded-xl border border-slate-800 p-4 shadow-xs flex flex-col md:flex-row md:items-center justify-between gap-3">
         {/* Contenedor de títulos e indicadores de jerarquía Master */}
         <div>
           {/* Insignia indicadora de vista de alcance o nivel macro activo */}
@@ -260,11 +267,12 @@ export default function DataPanel({
               {province.abbreviation || province.id} {/* Abreviatura de la entidad */}
             </span>
           </div>
-          {/* Subtítulo indicativo del nivel de datos */}
+          {/* Subtítulo indicativo del nivel de datos según el territorio activo */}
           <span className="text-[10px] font-bold text-slate-500 uppercase tracking-widest block mb-0.5">
-            {province.id === 'WORLD_MAP' ? 'Indicadores Globales (Mundo)' : // Caso Mundo
-             province.id === 'CONTINENT_MAP' ? 'Indicadores Continentales' : // Caso Continente
-             'Indicadores Federales (Nivel País)'} {/* Caso República Argentina por defecto */}
+            {province.id === 'WORLD_MAP' ? 'Indicadores Globales (Mundo)' : // Caso Nivel Mundo
+             province.id === 'CONTINENT_MAP' ? 'Indicadores Continentales' : // Caso Nivel Continente
+             province.id === 'COUNTRY_MAP' ? 'Indicadores Federales (Nivel País)' : // Caso Nivel País (República Argentina)
+             `Indicadores Regionales (${province.name})`} {/* Caso Provincia o Región territorial específica */}
           </span>
           {/* Título principal con el nombre del territorio Master activo */}
           <h2 className="text-2xl font-serif italic text-emerald-400 tracking-tight">
@@ -529,7 +537,8 @@ export default function DataPanel({
             </div>
           </div>
         </div>
-      </div>
+        </div>
+      </motion.div>
     </div>
   );
 }

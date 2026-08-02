@@ -3,7 +3,7 @@ import path from 'path';
 import { createServer as createViteServer } from 'vite';
 import { adminAuth } from './src/lib/firebase-admin.ts';
 import { getDb } from './src/db/index.ts';
-import { users, provinceCustomizations } from './src/db/schema.ts';
+import { users, provinceCustomizations, geoNodes } from './src/db/schema.ts';
 import { eq } from 'drizzle-orm';
 // Importamos el SDK oficial de Google GenAI para interactuar con Gemini en el servidor
 import { GoogleGenAI, Type } from '@google/genai';
@@ -124,6 +124,180 @@ async function startServer() {
       res.json({ success: true });
     } catch (err: any) {
       console.error('Error saving customization to Cloud SQL:', err);
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  // ============================================================================
+  // ENDPOINTS DE GESTIÓN Y PERSISTENCIA DE NODOS GEOGRÁFICOS Y RUTAS (geoNodes)
+  // ============================================================================
+
+  // Endpoint GET: Obtiene la lista completa de nodos geográficos desde Cloud SQL
+  app.get('/api/nodes', async (_req, res) => {
+    try {
+      const db = getDb(); // Obtiene la instancia de la base de datos Drizzle ORM
+      const result = await db.select().from(geoNodes); // Realiza SELECT * de la tabla geoNodes
+      // Mapea los resultados al formato estandarizado TreeNode consumido en el cliente
+      const formattedNodes = result.map(node => {
+        const custom = (node.customData as any) || {}; // Recupera objeto de metadatos o customData
+        return {
+          id: node.id, // ID único del nodo
+          name: node.name, // Nombre amigable del territorio
+          parentId: node.parentId || null, // ID del padre
+          isVisible: custom.isVisible !== undefined ? Boolean(custom.isVisible) : true, // Visibilidad (Pilar A)
+          type: node.level || 'custom', // Tipo o nivel
+          svgPath: node.svgPath || undefined, // Trazado SVG opcional
+          value: custom.value, // Valor métrico opcional
+          ownerId: custom.ownerId || 'system', // Propietario
+          customData: custom // Metadatos
+        };
+      });
+      res.json(formattedNodes); // Retorna arreglo JSON de nodos
+    } catch (err: any) {
+      console.warn('Advertencia o error al consultar geoNodes en Cloud SQL:', err.message);
+      res.json([]); // Retorna lista vacía permitiendo fallback transparente a almacenamiento local
+    }
+  });
+
+  // Endpoint POST: Crea o actualiza un nodo geográfico individual en Cloud SQL
+  app.post('/api/nodes', async (req, res) => {
+    try {
+      const node = req.body; // Extrae el payload del nodo enviado desde el cliente
+      if (!node || !node.id || !node.name) { // Valida campos obligatorios
+        res.status(400).json({ error: 'Faltan campos id o name obligatorios' });
+        return;
+      }
+
+      const db = getDb(); // Obtiene la conexión a la base de datos
+      const existing = await db.select().from(geoNodes).where(eq(geoNodes.id, node.id)).limit(1); // Busca si ya existe
+
+      const customDataPayload = { // Prepara el objeto JSONB de customData
+        ...(node.customData || {}), // Mantiene metadatos previos
+        isVisible: node.isVisible !== undefined ? node.isVisible : true, // Almacena flag de visibilidad
+        value: node.value, // Valor métrico
+        ownerId: node.ownerId || 'system' // Identificador de propietario
+      };
+
+      if (existing.length > 0) { // Si el nodo ya existe realiza UPDATE
+        await db.update(geoNodes).set({
+          name: node.name, // Actualiza nombre
+          parentId: node.parentId || null, // Actualiza parentId
+          level: node.type || 'custom', // Actualiza nivel
+          svgPath: node.svgPath || null, // Actualiza trazado SVG
+          customData: customDataPayload, // Actualiza JSONB customData
+          updatedAt: new Date() // Actualiza marca de tiempo
+        }).where(eq(geoNodes.id, node.id));
+      } else { // Si es un nodo nuevo realiza INSERT
+        await db.insert(geoNodes).values({
+          id: node.id, // Clave primaria
+          workspaceId: 'ws_default', // Espacio de trabajo predeterminado
+          parentId: node.parentId || null, // ID padre
+          level: node.type || 'custom', // Nivel
+          name: node.name, // Nombre
+          svgPath: node.svgPath || null, // Path SVG
+          customData: customDataPayload // Metadatos JSONB
+        });
+      }
+
+      res.json({ success: true, id: node.id }); // Retorna respuesta exitosa
+    } catch (err: any) {
+      console.error('Error al guardar nodo en Cloud SQL:', err);
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  // Endpoint PUT /api/nodes/:id: Modifica campos específicos (ej: isVisible u parentId) de un nodo
+  app.put('/api/nodes/:id', async (req, res) => {
+    try {
+      const nodeId = req.params.id; // Recupera el ID del nodo desde los parámetros de URL
+      const updates = req.body; // Extrae las actualizaciones (isVisible, parentId, etc.)
+      const db = getDb(); // Obtiene la conexión DB
+
+      const existing = await db.select().from(geoNodes).where(eq(geoNodes.id, nodeId)).limit(1); // Consulta existencia
+      if (existing.length > 0) {
+        const currentNode = existing[0]; // Nodo actual
+        const currentCustom = (currentNode.customData as any) || {}; // Metadatos actuales
+
+        const newCustom = { // Fusiona metadatos actualizados
+          ...currentCustom,
+          ...(updates.isVisible !== undefined ? { isVisible: updates.isVisible } : {})
+        };
+
+        await db.update(geoNodes).set({
+          ...(updates.parentId !== undefined ? { parentId: updates.parentId } : {}), // Actualiza parentId si se provee
+          ...(updates.name ? { name: updates.name } : {}), // Actualiza nombre si se provee
+          ...(updates.svgPath ? { svgPath: updates.svgPath } : {}), // Actualiza svgPath
+          customData: newCustom, // Guarda JSONB con visibilidad actualizada
+          updatedAt: new Date() // Setea marca de tiempo
+        }).where(eq(geoNodes.id, nodeId));
+      }
+
+      res.json({ success: true, id: nodeId }); // Responde confirmando
+    } catch (err: any) {
+      console.error('Error al actualizar nodo en Cloud SQL:', err);
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  // Endpoint POST /api/nodes/batch: Guarda un lote completo de nodos vectoriales (Canvas de Calibración)
+  app.post('/api/nodes/batch', async (req, res) => {
+    try {
+      const { nodes } = req.body; // Extrae el arreglo de nodos vectoriales
+      if (!Array.isArray(nodes) || nodes.length === 0) { // Valida que el arreglo no esté vacío
+        res.status(400).json({ error: 'Se requiere un arreglo "nodes" válido' });
+        return;
+      }
+
+      const db = getDb(); // Obtiene la instancia DB
+      for (const item of nodes) { // Recorre el arreglo de nodos vectoriales del canvas
+        const nodeId = item.id; // Obtiene ID
+        const existing = await db.select().from(geoNodes).where(eq(geoNodes.id, nodeId)).limit(1); // Verifica si ya existe
+
+        const customPayload = { // Estructura metadatos
+          isVisible: true,
+          properties: item.metadata || item.properties || {}
+        };
+
+        if (existing.length > 0) { // Actualiza si existe
+          await db.update(geoNodes).set({
+            name: item.name || `Nodo Vectorial ${nodeId}`,
+            parentId: item.parentId || 'root',
+            level: item.type || 'region',
+            svgPath: item.svgPath || item.d || null,
+            visualStyles: item.visualStyles || {},
+            customData: customPayload,
+            updatedAt: new Date()
+          }).where(eq(geoNodes.id, nodeId));
+        } else { // Inserta si es nuevo
+          await db.insert(geoNodes).values({
+            id: nodeId,
+            workspaceId: item.workspaceId || 'ws_default',
+            parentId: item.parentId || 'root',
+            level: item.type || 'region',
+            name: item.name || `Nodo Vectorial ${nodeId}`,
+            svgPath: item.svgPath || item.d || null,
+            visualStyles: item.visualStyles || {},
+            customData: customPayload
+          });
+        }
+      }
+
+      res.json({ success: true, count: nodes.length }); // Retorna la cantidad guardada
+    } catch (err: any) {
+      console.error('Error al guardar lote de nodos en Cloud SQL:', err);
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  // Endpoint DELETE /api/nodes/:id: Elimina un nodo de la base de datos
+  app.delete('/api/nodes/:id', async (req, res) => {
+    try {
+      const nodeId = req.params.id; // Obtiene el ID del nodo a borrar
+      const db = getDb(); // Obtiene la conexión DB
+      await db.delete(geoNodes).where(eq(geoNodes.id, nodeId)); // Ejecuta DELETE en geoNodes
+      res.json({ success: true, deletedId: nodeId }); // Responde confirmación
+    } catch (err: any) {
+      console.error('Error al eliminar nodo en Cloud SQL:', err);
       res.status(500).json({ error: err.message });
     }
   });

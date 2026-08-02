@@ -212,8 +212,8 @@ export default function Header({
               </div>
             )}
 
-            {/* Buscador de Subdivisiones */}
-            {subdivisions.length > 0 && (
+            {/* Buscador y Lista de Subdivisiones o Estado Vacío Informativo (FASE 2) */}
+            {subdivisions.length > 0 ? (
               <div className="space-y-2">
                 <div className="flex items-center justify-between">
                   <span className="text-[9px] font-black uppercase tracking-widest text-slate-400 flex items-center space-x-1">
@@ -261,6 +261,17 @@ export default function Header({
                     </div>
                   )}
                 </div>
+              </div>
+            ) : (
+              /* FASE 2: OPCIÓN DESHABILITADA INFORMATIVA CUANDO EL NODO ESTÁ VACÍO */
+              <div className="p-3 bg-slate-950/80 border border-dashed border-slate-800 rounded-xl text-center space-y-1">
+                <span className="text-[11px] font-bold text-slate-400 block flex items-center justify-center gap-1">
+                  <Layers size={12} className="text-slate-500" />
+                  <span>Sin subdivisiones</span>
+                </span>
+                <p className="text-[10px] text-slate-500 leading-tight">
+                  No hay regiones secundarias cargadas en este nodo. Usa las migas de pan superiores para retroceder.
+                </p>
               </div>
             )}
           </div>

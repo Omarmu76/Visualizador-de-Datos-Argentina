@@ -19,8 +19,9 @@ import AdminHierarchyTreeEditor from './components/AdminHierarchyTreeEditor'; //
 import AdminUserManagement from './components/AdminUserManagement'; // Componente de gestión de usuarios y perfiles para administradores
 import UserProfileModal from './components/UserProfileModal'; // Componente modal para edición de perfil personal
 import { mockProvincesData } from './data/mockData'; // Diccionario con los datos geográficos e indicadores iniciales de Argentina
-import { MetricType, ProvinceData, RegionNode, NavNode, UserRole, UserProfile } from './types'; // Tipos e interfaces de TypeScript
+import { MetricType, ProvinceData, RegionNode, NavNode, UserRole, UserProfile, TreeNode } from './types'; // Tipos e interfaces de TypeScript
 import { safeSetItem, safeGetItem, safeRemoveItem } from './lib/storage'; // Funciones auxiliares para almacenamiento local seguro
+import { fetchAllGeoNodes } from './lib/dbService'; // Importa la consulta a la base de datos real (Cloud SQL / Drizzle)
 
 // Objeto con la configuración inicial y predeterminada de perfiles de usuario por defecto
 const DEFAULT_USER_PROFILES: Record<string, UserProfile> = {
@@ -189,6 +190,24 @@ function AppContent() { // Componente que maneja el estado global y las rutas de
   const navigate = useNavigate(); // Hook para ejecutar navegaciones programáticas de URL
   const location = useLocation(); // Hook para obtener la ubicación y ruta actual activa
 
+  // Estado para almacenar el árbol de nodos dinámicos recuperado desde la base de datos real (Cloud SQL / Drizzle)
+  const [appTreeNodes, setAppTreeNodes] = useState<TreeNode[]>([]);
+
+  // HOOK DE INICIALIZACIÓN (Task 3): Carga el árbol de nodos directamente de la base de datos al iniciar la app
+  useEffect(() => {
+    async function initTreeFromDatabase() { // Función asíncrona interna para cargar el árbol
+      try {
+        const nodesFromDb = await fetchAllGeoNodes(); // SELECT a la tabla geoNodes / backend
+        if (nodesFromDb && nodesFromDb.length > 0) { // Si se retornaron nodos válidos
+          setAppTreeNodes(nodesFromDb); // Actualiza el estado global con el árbol de la BD
+        }
+      } catch (err) {
+        console.error('Error al inicializar el árbol de nodos desde la base de datos:', err); // Log de error
+      }
+    }
+    initTreeFromDatabase(); // Ejecuta la carga inicial
+  }, []); // Array de dependencias vacío para ejecutar una única vez al montar el componente
+
   // Estado que administra el rol RBAC del usuario activo ('guest' | 'pro' | 'admin')
   const [userRole, setUserRole] = useState<UserRole>(() => { // Inicialización diferida del estado
     const savedRole = safeGetItem('argentina_user_role') as UserRole; // Recupera el rol guardado en almacenamiento local
@@ -349,40 +368,80 @@ function AppContent() { // Componente que maneja el estado global y las rutas de
     selectedProvinceId; // Retorna el ID correspondiente al nivel o null si no hay provincia seleccionada
 
   // Carga de la provincia o entidad territorial activa leyendo del último elemento de navPath
-  const selectedProvince: ProvinceData = useMemo(() => { // Memoriza los datos del territorio activo
-    const lastNavNode = navPath && navPath.length > 0 ? navPath[navPath.length - 1] : null; // Toma el último nodo activo
-    if (!lastNavNode || lastNavNode.id === 'root') { // Si no hay nodo o está en la raíz
-      return provincesData['COUNTRY_MAP'] || defaultCountryMapData; // Retorna datos macro de Argentina por defecto
-    } // Fin de verificación de raíz
-    const lastId = lastNavNode.id.toLowerCase(); // Normaliza la ID a minúsculas
-    if (lastId === 'world' || lastId === 'mundo') { // Nivel Mundo
-      return provincesData['WORLD_MAP'] || defaultWorldMapData; // Retorna datos del mapa mundial
-    } // Fin de verificación Mundo
-    if (lastId === 'continent' || lastId === 'continente') { // Nivel Continente
-      return provincesData['CONTINENT_MAP'] || defaultContinentMapData; // Retorna datos del mapa continental
-    } // Fin de verificación Continente
-    if (lastId === 'country' || lastId === 'argentina' || lastId === 'pais') { // Nivel País Argentina
+  const selectedProvince: ProvinceData = useMemo(() => { // Memoriza los datos del territorio activo de forma atómica
+    const lastNavNode = navPath && navPath.length > 0 ? navPath[navPath.length - 1] : null; // Toma el último nodo activo del array navPath
+    if (!lastNavNode || lastNavNode.id === 'root') { // Si no hay nodo o la navegación está en el inicio raíz
+      return provincesData['COUNTRY_MAP'] || defaultCountryMapData; // Retorna datos macro de la República Argentina por defecto
+    } // Fin de verificación de nodo raíz
+    const lastId = lastNavNode.id.toLowerCase(); // Normaliza el identificador a minúsculas
+    if (lastId === 'world' || lastId === 'mundo') { // Si el nodo terminal es el Nivel Mundo
+      return provincesData['WORLD_MAP'] || defaultWorldMapData; // Retorna datos e indicadores del mapa mundial
+    } // Fin de verificación del nivel Mundo
+    if (lastId === 'continent' || lastId === 'continente') { // Si el nodo terminal es el Nivel Continente
+      return provincesData['CONTINENT_MAP'] || defaultContinentMapData; // Retorna datos e indicadores del mapa continental
+    } // Fin de verificación del nivel Continente
+    if (lastId === 'country' || lastId === 'argentina' || lastId === 'pais') { // Si el nodo terminal es el Nivel País Argentina
+      if (selectedProvinceId && selectedProvinceId !== 'COUNTRY_MAP' && (provincesData[selectedProvinceId] || mockProvincesData[selectedProvinceId])) {
+        return provincesData[selectedProvinceId] || mockProvincesData[selectedProvinceId];
+      }
       return provincesData['COUNTRY_MAP'] || defaultCountryMapData; // Retorna los datos macro de la República Argentina
-    } // Fin de verificación País
-    if (selectedProvinceId && (provincesData[selectedProvinceId] || mockProvincesData[selectedProvinceId])) { // Si hay provincia activa seleccionada
-      return provincesData[selectedProvinceId] || mockProvincesData[selectedProvinceId]; // Retorna datos de la provincia
-    } // Fin de verificación provincia activa
-    if (provincesData[lastNavNode.id] || mockProvincesData[lastNavNode.id]) { // Si el nodo terminal es una provincia
-      return provincesData[lastNavNode.id] || mockProvincesData[lastNavNode.id]; // Retorna datos de esa provincia
-    } // Fin de verificación nodo provincia
-    return { // Fallback para región o nodo genérico personalizado
-      id: lastNavNode.id, // ID del nodo
-      name: lastNavNode.name, // Nombre del nodo
-      abbreviation: lastNavNode.id.toUpperCase(), // Abreviatura
-      economicProfile: defaultCountryMapData.economicProfile, // Perfil económico heredado
-      socialEmployment: defaultCountryMapData.socialEmployment, // Indicadores sociales heredados
-      incomeStructure: defaultCountryMapData.incomeStructure, // Estructura de ingresos heredada
-      connectivity: defaultCountryMapData.connectivity, // Conectividad heredada
-      budgetSpending: defaultCountryMapData.budgetSpending, // Presupuesto heredado
-      mobilityServices: defaultCountryMapData.mobilityServices, // Servicios heredados
-      municipalities: [] // Sin subdivisiones
-    }; // Fin del objeto fallback
-  }, [navPath, selectedProvinceId, provincesData]); // Dependencias del memorizador
+    } // Fin de verificación del nivel País
+
+    // Recupera la estructura base de datos correspondiente al nodo terminal activo
+    let baseProv: ProvinceData; // Variable contenedora de datos base
+    if (provincesData[lastNavNode.id] || mockProvincesData[lastNavNode.id]) { // Verifica si el nodo existe en el registro
+      baseProv = provincesData[lastNavNode.id] || mockProvincesData[lastNavNode.id]; // Asigna la provincia registrada
+    } else if (selectedProvinceId && (provincesData[selectedProvinceId] || mockProvincesData[selectedProvinceId])) { // Verifica selección
+      baseProv = provincesData[selectedProvinceId] || mockProvincesData[selectedProvinceId]; // Asigna provincia por ID
+    } else { // Si es un nodo territorial personalizado o genérico
+      baseProv = { // Crea el objeto base con metadatos heredados del sistema
+        id: lastNavNode.id, // ID del nodo terminal activo
+        name: lastNavNode.name, // Nombre de la entidad territorial
+        abbreviation: lastNavNode.id.toUpperCase(), // Abreviatura generada en mayúsculas
+        economicProfile: defaultCountryMapData.economicProfile, // Perfil económico heredado
+        socialEmployment: defaultCountryMapData.socialEmployment, // Indicadores sociales heredados
+        incomeStructure: defaultCountryMapData.incomeStructure, // Estructura de ingresos heredada
+        connectivity: defaultCountryMapData.connectivity, // Conectividad heredada
+        budgetSpending: defaultCountryMapData.budgetSpending, // Presupuesto heredado
+        mobilityServices: defaultCountryMapData.mobilityServices, // Servicios heredados
+        municipalities: [] // Colección vacía por defecto
+      }; // Fin del objeto de respaldo
+    } // Fin del bloque condicional de resolución base
+
+    // BÚSQUEDA DE HIJOS DIRECTOS (parentId === lastNavNode.id) EN EL ÁRBOL DINÁMICO DE BASE DE DATOS (appTreeNodes)
+    const activeParentId = lastNavNode.id; // Asigna el identificador del nodo activo como padre objetivo
+    const dynamicChildren = appTreeNodes.filter(n => // Filtra los subnodos cuyo parentId sea idéntico al nodo activo
+      (n.parentId === activeParentId || (activeParentId === 'root' && (!n.parentId || n.parentId === 'root'))) && // Comprueba relación padre
+      n.isVisible !== false // Aplica filtro estricto de visibilidad pública
+    ); // Fin de filtrado de hijos
+
+    // Si existen subnodos registrados para esta región, los convierte en sus subdivisiones/municipios
+    if (dynamicChildren && dynamicChildren.length > 0) { // Si hay elementos hijos válidos
+      const dynamicMunicipalities = dynamicChildren.map(n => ({ // Mapea los nodos al formato de municipios
+        id: n.id, // Identificador único
+        name: n.name, // Nombre de la subdivisión
+        value: n.value ?? 30, // Valor cuantitativo
+        percentage: n.percentage ?? 10, // Porcentaje territorial
+        d: n.d || n.svgData || (n.paths && n.paths[0] ? n.paths[0].d : ''), // Comandos vectoriales SVG
+        color: '#10b981' // Color primario por defecto
+      })); // Fin del mapeo
+      return { // Retorna el objeto unificado con las subdivisiones dinámicas
+        ...baseProv, // Copia las propiedades base de la provincia
+        id: lastNavNode.id, // Garantiza el ID del nodo terminal activo
+        name: lastNavNode.name, // Garantiza el nombre del nodo terminal activo
+        municipalities: dynamicMunicipalities // Asigna las subdivisiones dinámicas encontradas
+      }; // Fin del retorno unificado
+    } // Fin del condicional de subnodos dinámicos
+
+    // ELIMINACIÓN TOTAL DEL FALLBACK AL MAPA DEL PADRE: Retorna estrictamente el objeto del nodo activo con sus subdivisiones
+    return { // Retorna el objeto territorial del nodo activo de forma aislada
+      ...baseProv, // Copia los datos base
+      id: lastNavNode.id, // Mantiene el ID del nodo activo
+      name: lastNavNode.name, // Mantiene el nombre del nodo activo
+      municipalities: baseProv.municipalities || [] // Retorna únicamente sus subdivisiones (si no tiene, pasa array vacío para Lienzo en Blanco)
+    }; // Fin del objeto territorial estricto sin fallback
+  }, [navPath, selectedProvinceId, provincesData, appTreeNodes]); // Dependencias del memorizador
+
 
   // FUNCIÓN UNIVERSAL DE NAVEGACIÓN JERÁRQUICA INTELIGENTE: REEMPLAZA HERMANOS Y AUTO-RECONSTRUYE RUTA COMPLETA
   const MapsToNode = (node: NavNode) => { // Función principal de enrutamiento jerárquico
@@ -469,25 +528,25 @@ function AppContent() { // Componente que maneja el estado global y las rutas de
       setActiveMapLevel('country'); // Establece vista país
       setSelectedProvinceId(null); // ¡Cero selección interna! Al estar en Argentina no hay provincia resaltada por defecto
       handleSelectSubdivision(null); // Limpia subdivisión
-    } else if (lastType === 'provincia') { // Si estamos en una Provincia
-      setActiveMapLevel('country'); // Visualiza la provincia en el mapa de Argentina
-      setSelectedProvinceId(targetLast.id); // Asigna la provincia activa
-      safeSetItem('argentina_selected_province_id', targetLast.id); // Guarda en almacenamiento seguro
-      handleSelectSubdivision(null); // Limpia subdivisión
-    } else if (lastType === 'subdivision') { // Si estamos en un Municipio
-      setActiveMapLevel('province'); // Nivel provincia para ver la subdivisión municipal
-      if (cleanPath.length >= 2) { // Si existe la provincia anterior en el camino
-        const provParent = cleanPath[cleanPath.length - 2]; // Obtiene el nodo de la provincia
-        if (provParent && provParent.type === 'provincia') { // Valida que sea provincia
+    } else if (lastType === 'provincia') { // Si estamos en una Provincia o Sub-región activa
+      setActiveMapLevel('province'); // Establece el nivel 'province' para buscar sus subdivisiones locales (no el mapa nacional completo)
+      setSelectedProvinceId(targetLast.id); // Asigna el identificador de la provincia activa
+      safeSetItem('argentina_selected_province_id', targetLast.id); // Guarda la selección activa en el almacenamiento
+      handleSelectSubdivision(null); // Limpia cualquier subdivisión seleccionada previamente
+    } else if (lastType === 'subdivision') { // Si estamos en un Municipio o Subdivisión
+      setActiveMapLevel('province'); // Nivel provincia para ver la subdivisión municipal en su contexto local
+      if (cleanPath.length >= 2) { // Si existe la provincia anterior en la cadena de navegación
+        const provParent = cleanPath[cleanPath.length - 2]; // Obtiene el nodo de la provincia contenedora
+        if (provParent && provParent.type === 'provincia') { // Valida que sea de tipo provincia
           setSelectedProvinceId(provParent.id); // Selecciona la provincia contenedora
-        } // Fin de validación
-      } // Fin de comprobación
+        } // Fin de validación del padre
+      } // Fin de comprobación de ancestro
       handleSelectSubdivision(targetLast.id); // Asigna la subdivisión seleccionada
-    } else { // Si es un nodo de región intermedia u otro tipo genérico
-      setActiveMapLevel('country'); // Nivel país
-      setSelectedProvinceId(null); // Sin provincia resaltada por defecto
-      handleSelectSubdivision(null); // Limpia subdivisión
-    } // Fin de sincronización
+    } else { // Si es un nodo de región intermedia u otro tipo genérico personalizado
+      setActiveMapLevel('province'); // Establece el nivel de mapa en 'province' para intentar renderizar sus sub-polígonos locales
+      setSelectedProvinceId(targetLast.id); // Asigna el ID del nodo personalizado
+      handleSelectSubdivision(null); // Limpia la subdivisión
+    } // Fin de sincronización de nivel de mapa
   }; // Fin de MapsToNode
 
   // FUNCIÓN PARA RETROCEDER EN EL HISTORIAL NAVPATH Y REAJUSTAR EL MOTOR DEL MAPA
@@ -500,7 +559,7 @@ function AppContent() { // Componente que maneja el estado global y las rutas de
         const targetType = targetNode.type ? targetNode.type.toLowerCase() : ''; // Normaliza el tipo
         
         if (targetId === 'root') { // Si retrocedió al inicio raíz
-          setActiveMapLevel('country'); // Restablece mapa
+          setActiveMapLevel('country'); // Restablece mapa al nivel país
           setSelectedProvinceId(null); // Sin provincia seleccionada
           handleSelectSubdivision(null); // Limpia la subdivisión
         } else if (targetId === 'world' || targetId === 'mundo') { // Si retrocedió a Mundo
@@ -515,16 +574,16 @@ function AppContent() { // Componente que maneja el estado global y las rutas de
           setActiveMapLevel('country'); // Cambia al nivel de país
           setSelectedProvinceId(null); // ¡Deselecciona la provincia! Muestra datos macro de Argentina
           handleSelectSubdivision(null); // Deselecciona subdivisión
-        } else if (provincesData[targetNode.id] || mockProvincesData[targetNode.id] || targetType === 'provincia') { // Si retrocedió a una provincia argentina real
-          setActiveMapLevel('country'); // Mantener en nivel de país
+        } else if (provincesData[targetNode.id] || mockProvincesData[targetNode.id] || targetType === 'provincia') { // Si retrocedió a una provincia o región
+          setActiveMapLevel('province'); // Mantiene el nivel de mapa en 'province' para no saltar al mapa nacional completo
           setSelectedProvinceId(targetNode.id); // Reestablece la provincia activa
           handleSelectSubdivision(null); // Limpia subdivisión
         } else if (targetType === 'subdivision') { // Si retrocedió a un municipio
           setActiveMapLevel('province'); // Cambia al nivel de provincia
           handleSelectSubdivision(targetNode.id); // Selecciona el municipio
         } else { // Si retrocedió a un nodo genérico o región
-          setActiveMapLevel('country'); // Nivel país
-          setSelectedProvinceId(null); // Sin provincia seleccionada por defecto
+          setActiveMapLevel('province'); // Establece nivel 'province' para la región activa
+          setSelectedProvinceId(targetNode.id); // Asigna el nodo objetivo
           handleSelectSubdivision(null); // Limpia subdivisión
         } // Fin del condicional de nivel
       } // Fin de verificación de targetNode
@@ -676,31 +735,60 @@ function AppContent() { // Componente que maneja el estado global y las rutas de
     handleUpdateProvince(updatedProvince); // Dispara la actualización global de la provincia
   }; // Fin de handleSaveTerritoryStyles
 
-  // Cálculo de las subdivisiones disponibles en el nodo activo actual para el desplegable del Header
+  // Cálculo de las subdivisiones disponibles en el nodo activo actual para el desplegable del Header (Filtro Público isVisible === true)
   const currentSubdivisions = useMemo(() => {
+    // 1. Identifica el ID del nodo activo actual en la ruta dinámica navPath
+    const activeParentId = navPath && navPath.length > 0 ? navPath[navPath.length - 1].id : 'root';
+
+    // Obtiene conjunto de IDs de nodos explícitamente ocultos por el administrador (isVisible === false)
+    const hiddenNodeIds = new Set(appTreeNodes.filter(n => n.isVisible === false).map(n => n.id));
+
+    // 2. Busca subnodos dinámicos registrados en appTreeNodes que pertenezcan al nodo activo y sean estrictamente VISIBLES
+    const visibleDynamicChildren = appTreeNodes.filter(n => {
+      const isChild = n.parentId === activeParentId || (activeParentId === 'root' && (!n.parentId || n.parentId === 'root'));
+      return isChild && n.isVisible !== false; // Filtro público estricto
+    });
+
+    if (visibleDynamicChildren.length > 0) { // Si existen subnodos dinámicos visibles
+      return visibleDynamicChildren.map(n => ({ // Retorna la lista mapeada
+        id: n.id,
+        name: n.name,
+        value: n.value
+      }));
+    }
+
+    // 3. Fallback a datos base aplicando también el filtro público de visibilidad
     if (activeMapLevel === 'world') {
-      return (defaultWorldMapData.municipalities || []).map(m => ({ id: m.id, name: m.name, value: m.value }));
+      return (defaultWorldMapData.municipalities || [])
+        .filter(m => !hiddenNodeIds.has(m.id)) // Oculta si el nodo fue marcado con ojo cerrado
+        .map(m => ({ id: m.id, name: m.name, value: m.value }));
     }
     if (activeMapLevel === 'continent') {
-      return (defaultContinentMapData.municipalities || []).map(m => ({ id: m.id, name: m.name, value: m.value }));
+      return (defaultContinentMapData.municipalities || [])
+        .filter(m => !hiddenNodeIds.has(m.id)) // Oculta si el nodo fue marcado con ojo cerrado
+        .map(m => ({ id: m.id, name: m.name, value: m.value }));
     }
     if (activeMapLevel === 'country' && !selectedProvinceId) {
-      // Estamos en el nodo Argentina: listamos las 24 provincias
-      return Object.values(mockProvincesData).map(p => ({
-        id: p.id,
-        name: p.name,
-        value: p.socialEmployment?.pobreza
-      }));
+      // Estamos en el nodo Argentina: listamos las 24 provincias que NO estén ocultas
+      return Object.values(mockProvincesData)
+        .filter(p => !hiddenNodeIds.has(p.id)) // Filtro de visibilidad pública
+        .map(p => ({
+          id: p.id,
+          name: p.name,
+          value: p.socialEmployment?.pobreza
+        }));
     }
     if (selectedProvince && selectedProvince.municipalities) {
-      return selectedProvince.municipalities.map(m => ({
-        id: m.id,
-        name: m.name,
-        value: m.value
-      }));
+      return selectedProvince.municipalities
+        .filter(m => !hiddenNodeIds.has(m.id)) // Filtro de visibilidad pública
+        .map(m => ({
+          id: m.id,
+          name: m.name,
+          value: m.value
+        }));
     }
     return [];
-  }, [activeMapLevel, selectedProvinceId, selectedProvince]);
+  }, [activeMapLevel, selectedProvinceId, selectedProvince, navPath, appTreeNodes]);
 
   // Manejador al seleccionar una subdivisión desde el menú desplegable del Header
   const handleHeaderSelectSubdivision = (subId: string) => {
@@ -918,6 +1006,8 @@ function AppContent() { // Componente que maneja el estado global y las rutas de
               <ProtectedRoute userRole={userRole} allowedRoles={['ADMIN', 'SUPER_ADMIN']}> {/* Envoltura de seguridad RBAC */}
                 <div className="space-y-6"> {/* Contenedor */}
                   <AdminHierarchyTreeEditor 
+                    treeNodes={appTreeNodes} // Pasa la lista de todos los nodos del árbol dinámico recuperados de la base de datos
+                    onUpdateTreeNodes={(newNodes) => setAppTreeNodes(newNodes)} // Sincroniza las mutaciones de nodos con el estado global de App
                     allProvinces={provincesData} // Pasa el mapa completo de provincias
                     onUpdateProvince={handleUpdateProvince} // Pasa la función de actualización de datos
                     onLoadAllProvinces={handleLoadAllProvinces} // Pasa la función de carga masiva

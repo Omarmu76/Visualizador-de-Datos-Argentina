@@ -23,6 +23,7 @@ import {
   Globe
 } from 'lucide-react'; // Íconos Lucide para la interfaz gráfica del árbol jerárquico y visibilidad
 import { ProvinceData, MunicipalityData, NavNode, TreeNode } from '../types'; // Importación de tipos TypeScript
+import { updateNodeVisibility, updateNodeParent, saveGeoNode, deleteGeoNode } from '../lib/dbService'; // Importación de funciones de persistencia real en BD (Cloud SQL / Drizzle)
 
 // Interfaz para definir las propiedades (props) que recibe el Editor Jerárquico de Administración
 interface AdminHierarchyTreeEditorProps {
@@ -159,16 +160,18 @@ export default function AdminHierarchyTreeEditor({
   };
 
   // PILAR A: Alterna la propiedad isVisible (Mostrar/Ocultar con ícono de Ojo)
-  const handleToggleVisibility = (nodeId: string) => {
-    const updated = treeState.map(n => {
-      if (n.id === nodeId) {
-        const nextVis = !n.isVisible;
-        showToast(`Visibilidad de '${n.name}' cambiada a: ${nextVis ? 'VISIBLE 👁️' : 'OCULTO 🙈'}`);
-        return { ...n, isVisible: nextVis };
+  const handleToggleVisibility = async (nodeId: string) => {
+    let nextVis = true; // Booleano para el nuevo estado de visibilidad
+    const updated = treeState.map(n => { // Recorre y mapea el estado local
+      if (n.id === nodeId) { // Halla el nodo objetivo
+        nextVis = !n.isVisible; // Invierte el valor booleano
+        showToast(`Visibilidad de '${n.name}' cambiada a: ${nextVis ? 'VISIBLE 👁️' : 'OCULTO 🙈'}`); // Muestra notificación toast
+        return { ...n, isVisible: nextVis }; // Retorna nodo con isVisible actualizado
       }
-      return n;
+      return n; // Retorna demás nodos intactos
     });
-    saveTreeNodes(updated);
+    saveTreeNodes(updated); // Actualiza estado en React y localStorage
+    await updateNodeVisibility(nodeId, nextVis); // Ejecuta UPDATE real en la base de datos (Cloud SQL / Drizzle)
   };
 
   // Construye la estructura jerárquica recursiva a partir del arreglo plano treeState
@@ -231,13 +234,13 @@ export default function AdminHierarchyTreeEditor({
   };
 
   // MANEJADOR SOLTADO (Drop): Reorganización jerárquica y actualización de parentId
-  const handleDrop = (e: React.DragEvent, targetParentNode: TreeNode) => {
-    e.preventDefault();
-    e.stopPropagation();
-    setDragOverNodeId(null);
+  const handleDrop = async (e: React.DragEvent, targetParentNode: TreeNode) => {
+    e.preventDefault(); // Detiene el comportamiento de soltado predeterminado
+    e.stopPropagation(); // Detiene la propagación del evento
+    setDragOverNodeId(null); // Resetea el indicador visual
 
-    if (!draggedNode) return;
-    if (draggedNode.id === targetParentNode.id) {
+    if (!draggedNode) return; // Cancela si no hay nodo siendo arrastrado
+    if (draggedNode.id === targetParentNode.id) { // Valida que no se intente re-parentar a sí mismo
       showToast('Un nodo no puede ser su propio padre.');
       setDraggedNode(null);
       return;
@@ -251,18 +254,21 @@ export default function AdminHierarchyTreeEditor({
       return n;
     });
 
-    saveTreeNodes(updated);
-    showToast(`¡Éxito! Se reasignó '${draggedNode.name}' bajo el nodo '${targetParentNode.name}'.`);
-    setDraggedNode(null);
+    saveTreeNodes(updated); // Actualiza estado local
+    await updateNodeParent(draggedNode.id, targetParentNode.id); // Ejecuta UPDATE del parentId en base de datos real
+    showToast(`¡Éxito! Se reasignó '${draggedNode.name}' bajo el nodo '${targetParentNode.name}'.`); // Notifica éxito
+    setDraggedNode(null); // Limpia estado de arrastre
   };
 
   // FUNCIÓN PARA GUARDAR RENOMBRADO DE UN NODO
-  const handleSaveEditName = (nodeId: string) => {
-    if (!editingNodeName.trim()) return;
+  const handleSaveEditName = async (nodeId: string) => {
+    if (!editingNodeName.trim()) return; // Ignora si el nombre está vacío
+    let targetNode: TreeNode | undefined; // Variable para almacenar el nodo modificado
 
     const updated = treeState.map(n => {
       if (n.id === nodeId) {
-        return { ...n, name: editingNodeName.trim() };
+        targetNode = { ...n, name: editingNodeName.trim() }; // Actualiza el objeto nodo
+        return targetNode;
       }
       return n;
     });
@@ -273,46 +279,51 @@ export default function AdminHierarchyTreeEditor({
       onUpdateProvince(updatedProv);
     }
 
-    saveTreeNodes(updated);
-    showToast(`Nodo renombrado a '${editingNodeName.trim()}' exitosamente.`);
-    setEditingNodeId(null);
-    setEditingNodeName('');
+    saveTreeNodes(updated); // Guarda en estado local
+    if (targetNode) {
+      await saveGeoNode(targetNode); // Ejecuta UPDATE en la base de datos backend
+    }
+    showToast(`Nodo renombrado a '${editingNodeName.trim()}' exitosamente.`); // Notifica al usuario
+    setEditingNodeId(null); // Sale del modo de edición
+    setEditingNodeName(''); // Limpia el campo de texto
   };
 
   // PILAR C: CREACIÓN DE NODO RAÍZ O SUB-RUTA
-  const handleCreateNode = (parentId: string | null) => {
-    if (!newNodeName.trim()) return;
+  const handleCreateNode = async (parentId: string | null) => {
+    if (!newNodeName.trim()) return; // Cancela si el nombre está vacío
 
-    const newId = `node_${Date.now()}`;
-    const newNode: TreeNode = {
-      id: newId,
-      name: newNodeName.trim(),
-      parentId: parentId,
-      isVisible: true,
-      type: newNodeType || 'custom'
+    const newId = `node_${Date.now()}`; // Genera ID único basado en timestamp
+    const newNode: TreeNode = { // Construye el nuevo objeto TreeNode
+      id: newId, // Asigna ID
+      name: newNodeName.trim(), // Asigna Nombre
+      parentId: parentId, // Asigna nodo padre
+      isVisible: true, // Establece visibilidad inicial en TRUE
+      type: newNodeType || 'custom' // Asigna tipo o nivel
     };
 
-    const updated = [...treeState, newNode];
-    saveTreeNodes(updated);
+    const updated = [...treeState, newNode]; // Agrega el nuevo nodo al arreglo
+    saveTreeNodes(updated); // Guarda estado local
+    await saveGeoNode(newNode); // Ejecuta INSERT en la tabla geoNodes de la base de datos
 
-    showToast(`Se creó '${newNodeName.trim()}' exitosamente ${parentId ? 'como sub-ruta' : 'como nodo raíz'}.`);
-    setAddingChildToParentId(null);
-    setIsAddingRoot(false);
-    setNewNodeName('');
+    showToast(`Se creó '${newNodeName.trim()}' exitosamente ${parentId ? 'como sub-ruta' : 'como nodo raíz'}.`); // Notifica éxito
+    setAddingChildToParentId(null); // Cierra formulario
+    setIsAddingRoot(false); // Cierra formulario raíz
+    setNewNodeName(''); // Resetea nombre
   };
 
   // ELIMINACIÓN DE UN NODO
-  const handleDeleteNode = (nodeId: string, nodeName: string) => {
-    if (nodeId === 'root' || nodeId === 'world' || nodeId === 'country') {
+  const handleDeleteNode = async (nodeId: string, nodeName: string) => {
+    if (nodeId === 'root' || nodeId === 'world' || nodeId === 'country') { // Valida protección de nodos núcleo
       showToast('No se pueden eliminar los nodos raíz principales protegidos del sistema.');
       return;
     }
 
-    if (!window.confirm(`¿Estás seguro de eliminar el nodo '${nodeName}' y removerlo del árbol?`)) return;
+    if (!window.confirm(`¿Estás seguro de eliminar el nodo '${nodeName}' y removerlo del árbol?`)) return; // Confirmación modal
 
-    const updated = treeState.filter(n => n.id !== nodeId && n.parentId !== nodeId);
-    saveTreeNodes(updated);
-    showToast(`Nodo '${nodeName}' eliminado exitosamente.`);
+    const updated = treeState.filter(n => n.id !== nodeId && n.parentId !== nodeId); // Elimina el nodo y sus subnodos
+    saveTreeNodes(updated); // Guarda lista limpia
+    await deleteGeoNode(nodeId); // Ejecuta DELETE en la base de datos real
+    showToast(`Nodo '${nodeName}' eliminado exitosamente.`); // Notifica
   };
 
   // RESTABLECER ÁRBOL AL ESTADO BASE OFICIAL

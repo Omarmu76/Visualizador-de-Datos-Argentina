@@ -154,33 +154,45 @@ export default function InteractiveMap({
     return provincePaths;
   }, [calibratedPathsTimestamp]);
 
+  // Ruta SVG vectorial memorizada de la provincia activa seleccionada
+  const selectedProvincePath = useMemo(() => { // Hook useMemo para optimizar el cálculo de la ruta vectorial
+    return activeProvincePaths.find(p => p.id === selectedProvince.id)?.d || (selectedProvince as unknown as { d?: string }).d || ''; // Busca la geometría SVG
+  }, [activeProvincePaths, selectedProvince.id, selectedProvince]); // Dependencias de sincronización de la provincia
+
+  // Cálculo memorizado del atributo viewBox adaptativo e inmune a errores NaN en estados vacíos
   const dynamicViewBox = useMemo(() => {
-    // 1. Nivel País (Argentina con sus 24 provincias): Mantiene exacto el viewBox calibrado (NO TOCAR ARGENTINA QUE ESTA BIEN)
+    // 1. Nivel País (Argentina con sus 24 provincias): Mantiene exacto el viewBox calibrado (BLINDAJE Y PROTECCIÓN DE ARGENTINA)
     if (activeMapLevel === 'country' || activeMapLevel === 'pais') {
       return "260 -2 440 964"; // Coordenadas geográficas calibradas para la República Argentina
     }
 
-    // 2. Si se han subido o importado trazos vectoriales para Mundo, Continente o Provincias:
-    // Se calcula automáticamente la caja contenedora (Bounding Box) de todos los trazos para que se acomode perfecto.
-    if (validMunicipalities.length > 0) {
-      const bbox = getMultiplePathsBBox(validMunicipalities); // Determina los límites geográficos exactos
-      if (bbox.width > 0 && bbox.height > 0) {
-        const padX = Math.max(10, bbox.width * 0.05); // Acolchado horizontal responsivo
-        const padY = Math.max(10, bbox.height * 0.05); // Acolchado vertical responsivo
+    // 2. Si existen subdivisiones o polígonos vectoriales cargados para el territorio activo:
+    // Se calcula automáticamente la caja contenedora (Bounding Box) evitando divisiones por cero o valores NaN
+    if (validMunicipalities && validMunicipalities.length > 0) { // Verifica si el arreglo contiene elementos
+      const bbox = getMultiplePathsBBox(validMunicipalities); // Determina los límites geográficos
+      if (bbox && bbox.width > 0 && bbox.height > 0 && !isNaN(bbox.x) && !isNaN(bbox.y)) { // Validación matemática anti-NaN
+        const padX = Math.max(10, bbox.width * 0.05); // Acolchado horizontal responsivo del 5%
+        const padY = Math.max(10, bbox.height * 0.05); // Acolchado vertical responsivo del 5%
         return `${bbox.x - padX} ${bbox.y - padY} ${bbox.width + padX * 2} ${bbox.height + padY * 2}`; // Encadre perfecto
-      }
-    }
+      } // Fin de validación matemática
+    } // Fin de condicional de municipios válidos
 
-    // 3. Vistas por defecto cuando aún no se han subido trazados vectoriales custom
+    // 3. Vistas por defecto cuando no hay vectoriales custom o el nodo está vacío (FASE 2: LIENZO EN BLANCO)
     if (activeMapLevel === 'world') return "0 0 1024 512"; // Vista estándar para el mapa mundial
     if (activeMapLevel === 'continent') return "0 0 800 1000"; // Vista estándar para mapa continental
 
-    // 4. Bounding box automático basado en la silueta de la provincia activa
-    const selectedProvincePath = activeProvincePaths.find(p => p.id === selectedProvince.id)?.d || '';
-    const bbox = getPathBBox(selectedProvincePath); // Obtiene la caja límites de la provincia seleccionada
-    const pad = 20; // Margen uniforme
-    return `${bbox.x - pad} ${bbox.y - pad} ${bbox.width + pad * 2} ${bbox.height + pad * 2}`;
-  }, [activeMapLevel, validMunicipalities, selectedProvince.id, activeProvincePaths]);
+    // 4. Bounding box automático basado en la silueta de la provincia activa en el Lienzo Principal
+    if (selectedProvincePath && selectedProvincePath.trim().length > 0) { // Si existe la ruta vectorial de la provincia activa
+      const bbox = getPathBBox(selectedProvincePath); // Obtiene la caja límites de la provincia seleccionada
+      if (bbox && bbox.width > 0 && bbox.height > 0 && !isNaN(bbox.x) && !isNaN(bbox.y)) { // Validación anti-NaN
+        const pad = 20; // Margen uniforme
+        return `${bbox.x - pad} ${bbox.y - pad} ${bbox.width + pad * 2} ${bbox.height + pad * 2}`; // Retorna viewBox
+      }
+    }
+
+    // 5. FALLBACK SEGURO PARA NODOS TOTALMENTE VACÍOS (Lienzo en Blanco predeterminado)
+    return "0 0 800 600"; // ViewBox predeterminado por defecto para evitar pantallas rotas
+  }, [activeMapLevel, validMunicipalities, selectedProvincePath]);
 
   // Sync transform states when selected province or its custom mapTransform changes
   useEffect(() => {
@@ -668,16 +680,18 @@ export default function InteractiveMap({
           </div> {/* Fin de pie informativo */}
         </div> {/* Fin de contenedor del selector desplegable */}
 
-        {/* Estado Vacío Informativo Overlay cuando no hay vectores cargados para esta capa */}
+        {/* Estado Vacío Informativo Banner cuando no hay vectores cargados para esta capa */}
         {validMunicipalities.length === 0 && activeMapLevel !== 'country' && activeMapLevel !== 'pais' && (
-          <div className="absolute inset-0 z-10 flex flex-col items-center justify-center p-6 text-center pointer-events-none bg-slate-950/70 backdrop-blur-xs rounded-xl border border-dashed border-slate-800 m-3 pt-20">
-            <div className="w-10 h-10 rounded-full bg-emerald-500/10 border border-emerald-500/20 flex items-center justify-center mb-2">
-              <Layers className="w-5 h-5 text-emerald-400 animate-pulse" />
+          <div className="absolute top-4 left-1/2 -translate-x-1/2 z-10 flex items-center space-x-2.5 px-3.5 py-2 text-center pointer-events-none bg-slate-900/90 border border-slate-800 rounded-lg shadow-xl">
+            <div className="w-6 h-6 rounded-full bg-emerald-500/10 border border-emerald-500/20 flex items-center justify-center shrink-0">
+              <Layers className="w-3.5 h-3.5 text-emerald-400 animate-pulse" />
             </div>
-            <p className="text-xs font-semibold text-slate-200">Sin mapa vectorial cargado en {mapLevels.find(l => l.id === activeMapLevel)?.name || 'esta capa'}</p>
-            <p className="text-[10px] text-slate-400 mt-1 max-w-xs leading-relaxed">
-              Utiliza el <span className="text-emerald-400 font-medium">Lienzo de Importación</span> en la pestaña "🎨 Editor Vectorial" para cargar o crear el mapa de esta región.
-            </p>
+            <div className="text-left">
+              <p className="text-[11px] font-bold text-slate-200">Sin municipios vectoriales en {mapLevels.find(l => l.id === activeMapLevel)?.name || 'esta provincia'}</p>
+              <p className="text-[9px] text-slate-400">
+                Utiliza el <span className="text-emerald-400 font-medium">Editor Vectorial</span> para importar o dibujar subdivisiones.
+              </p>
+            </div>
           </div>
         )}
 
@@ -697,6 +711,45 @@ export default function InteractiveMap({
           }}
           transition={{ type: 'spring', damping: 25, stiffness: 150 }}
         >
+          {/* DEFINICIÓN DE PATRÓN DE CUADRÍCULA DE FONDO PARA EL LIENZO EN BLANCO */}
+          <defs>
+            <pattern id="blank-canvas-grid" width="40" height="40" patternUnits="userSpaceOnUse">
+              <path d="M 40 0 L 0 0 0 40" fill="none" stroke="rgba(51, 65, 85, 0.25)" strokeWidth="0.8" />
+            </pattern>
+          </defs>
+
+          {/* FONDO DE CUADRÍCULA TÉCNICA Y ESTADO VACÍO CUANDO NO HAY GEOMETRÍA NI SUBDIVISIONES NI RUTA PROVINCIAL */}
+          {validMunicipalities.length === 0 && !selectedProvincePath && activeMapLevel !== 'country' && activeMapLevel !== 'pais' && (
+            <rect width="100%" height="100%" fill="url(#blank-canvas-grid)" />
+          )}
+
+          {/* TEXTO Y SÍMBOLO CENTRADO SVG EN EL LIENZO EN BLANCO (FASE 2) */}
+          {validMunicipalities.length === 0 && !selectedProvincePath && activeMapLevel !== 'country' && activeMapLevel !== 'pais' && (
+            <g id="empty-state-svg-group" className="pointer-events-none select-none">
+              <text
+                x="400"
+                y="270"
+                textAnchor="middle"
+                fill="#94a3b8"
+                fontSize="18"
+                fontWeight="bold"
+                className="font-sans tracking-wide"
+              >
+                Sin datos geográficos disponibles en esta región
+              </text>
+              <text
+                x="400"
+                y="300"
+                textAnchor="middle"
+                fill="#64748b"
+                fontSize="12"
+                className="font-sans"
+              >
+                (Utilice la barra de herramientas para importar un mapa vectorial JSON/SVG)
+              </text>
+            </g>
+          )}
+
           {/* Sombra de agua / Mar Argentino en vista País */}
           {(activeMapLevel === 'country' || activeMapLevel === 'pais') && (
             <rect x="260" y="-2" width="440" height="964" fill="transparent" />
@@ -721,11 +774,15 @@ export default function InteractiveMap({
                     strokeWidth={isSelected ? 3.5 : 2}
                     className="transition-all duration-150 cursor-pointer"
                     onClick={() => {
-                      const fullData = mockProvincesData[prov.id];
-                      if (fullData) onSelectProvince(fullData);
-                      if (onNavigateToNode) {
-                        onNavigateToNode({ id: prov.id, name: prov.name, type: 'provincia' });
-                      }
+                      const fullData = mockProvincesData[prov.id] || {
+                        id: prov.id,
+                        name: prov.name,
+                        abbreviation: prov.id.substring(0, 3).toUpperCase(),
+                        municipalities: []
+                      };
+                      onSelectProvince(fullData as ProvinceData);
+                      // El clic directo en el SVG inspecciona la provincia actualizando selectedProvince
+                      // sin cambiar activeMapLevel para preservar la vista del mapa de Argentina y el mini-mapa inferior.
                     }}
                     onMouseEnter={() => setHoveredProv(prov.id)}
                     onMouseLeave={() => setHoveredProv(null)}
@@ -741,12 +798,12 @@ export default function InteractiveMap({
               })}
             </g>
           ) : (
-            /* En Mundo, Continente o Zoom Municipio: Renderizar las subdivisiones (municipalities) de selectedProvince */
+            /* LIENZO PRINCIPAL (MAPA GRANDE) EN NIVEL PROVINCIA O SUB-REGIÓN */
             <g id="subdivisions-group">
               {/* Silueta de la provincia seleccionada como fondo de guía en el nivel municipio */}
               {activeMapLevel === 'municipality' && (
                 <path
-                  d={activeProvincePaths.find(p => p.id === selectedProvince.id)?.d || ''}
+                  d={selectedProvincePath}
                   fill="rgba(30, 41, 59, 0.1)"
                   stroke="rgba(148, 163, 184, 0.3)"
                   strokeWidth={2}
@@ -754,49 +811,64 @@ export default function InteractiveMap({
                 />
               )}
 
-              {(selectedProvince.municipalities || []).map((muni) => { // Recorre el listado de municipios o subdivisiones del territorio activo
-                if (muni.paused || !muni.d || !muni.d.trim()) return null; // Solo renderiza si tiene un path SVG válido
-                const dPath = muni.d;
-                const isSelected = selectedSubdivisionId === muni.id; // Verifica si este polígono en específico está seleccionado por el usuario
-                const isHovered = hoveredMuni === muni.id; // Verifica si el puntero del mouse está flotando encima de este polígono
-                const val = muni.value; // Recupera el valor asignado de la métrica activa
-                
-                // --- RESOLUCIÓN DINÁMICA DE ESTILOS VISUALES ---
-                const fillHex = muni.visualStyles?.fillColor || muni.color || getColorForValue(val, selectedMetric); // Prioriza el color de relleno del inspector, luego el color plano, luego el gradiente de métricas
-                const strokeHex = isSelected ? '#f59e0b' : (muni.visualStyles?.strokeColor || '#334155'); // Usa color ámbar si está seleccionado, de lo contrario prioriza el color de borde del inspector o el color oscuro por defecto
-                const strokeW = isSelected ? dynamicStrokeUnit * 2.5 : (muni.visualStyles?.strokeWidth !== undefined ? muni.visualStyles.strokeWidth : dynamicStrokeUnit);
+              {/* Si la provincia tiene subdivisiones con trazo vectorial, las dibuja individualmente */}
+              {validMunicipalities.length > 0 ? (
+                (selectedProvince.municipalities || []).map((muni) => { // Recorre el listado de municipios o subdivisiones
+                  if (muni.paused || !muni.d || !muni.d.trim()) return null; // Solo renderiza si tiene un path SVG válido
+                  const dPath = muni.d;
+                  const isSelected = selectedSubdivisionId === muni.id; // Verifica si está seleccionado
+                  const isHovered = hoveredMuni === muni.id; // Verifica si el puntero está encima
+                  const val = muni.value; // Recupera el valor asignado
+                  
+                  const fillHex = muni.visualStyles?.fillColor || muni.color || getColorForValue(val, selectedMetric); // Color de relleno
+                  const strokeHex = isSelected ? '#f59e0b' : (muni.visualStyles?.strokeColor || '#334155'); // Color de contorno
+                  const strokeW = isSelected ? dynamicStrokeUnit * 2.5 : (muni.visualStyles?.strokeWidth !== undefined ? muni.visualStyles.strokeWidth : dynamicStrokeUnit);
 
-                return ( // Retorna el elemento vectorial del polígono
-                  <path
-                    key={muni.id} // Clave única de reconciliación en React para optimizar el árbol virtual DOM
-                    d={dPath} // Asigna el conjunto de trazos y coordenadas geográficas
-                    fill={fillHex} // Aplica el color de relleno determinado por la resolución dinámica
-                    stroke={strokeHex} // Aplica el color de contorno determinado por la resolución dinámica
-                    strokeWidth={strokeW} // Aplica el espesor físico del trazo determinado
-                    className="transition-all duration-150 cursor-pointer animate-fade-in" // Clases de animación y transición suave de Tailwind
-                    onClick={() => { // Evento de clic para seleccionar e inspeccionar la subdivisión catastral
-                      setSelectedSubdivisionId(muni.id); // Almacena el ID del municipio seleccionado en el estado superior
-                      setEditSubName(muni.name); // Configura el nombre en el editor básico
-                      setEditSubVal(muni.value); // Configura el valor en el editor básico
-                      setEditSubPct(muni.percentage); // Configura el porcentaje provincial en el editor básico
-                      if (!showManager) setShowManager(true); // Abre el panel de administración lateral si estaba cerrado
-                      setManagerTab('palette'); // Se posiciona por defecto en la pestaña de edición de paletas o atributos
-                      if (onNavigateToNode) { // Verifica si está disponible el manejador de navegación universal
-                        onNavigateToNode({ id: muni.id, name: muni.name, type: 'subdivision' }); // Dispara el avance jerárquico
-                      } // Fin de evaluación onNavigateToNode
-                    }}
-                    onMouseEnter={() => setHoveredMuni(muni.id)} // Activa el estado flotante (hover) al entrar con el mouse
-                    onMouseLeave={() => setHoveredMuni(null)} // Desactiva el estado flotante (hover) al salir con el mouse
-                    style={{ // Aplica sombras y efectos visuales nativos según el estado de interacción
-                      filter: isSelected
-                        ? 'drop-shadow(0px 0px 8px #f59e0b)' // Efecto de brillo ámbar si está seleccionado
-                        : isHovered
-                        ? 'brightness(1.2)' // Brillo suave si se pasa el mouse por encima
-                        : 'none', // Sin filtros de color en estado normal
-                    }}
-                  />
-                ); // Fin del elemento path de la subdivisión catastral
-              })}
+                  return ( // Retorna el elemento vectorial del polígono
+                    <path
+                      key={muni.id}
+                      d={dPath}
+                      fill={fillHex}
+                      stroke={strokeHex}
+                      strokeWidth={strokeW}
+                      className="transition-all duration-150 cursor-pointer animate-fade-in"
+                      onClick={() => {
+                        setSelectedSubdivisionId(muni.id);
+                        setEditSubName(muni.name);
+                        setEditSubVal(muni.value);
+                        setEditSubPct(muni.percentage);
+                        if (!showManager) setShowManager(true);
+                        setManagerTab('palette');
+                        if (onNavigateToNode) {
+                          onNavigateToNode({ id: muni.id, name: muni.name, type: 'subdivision' });
+                        }
+                      }}
+                      onMouseEnter={() => setHoveredMuni(muni.id)}
+                      onMouseLeave={() => setHoveredMuni(null)}
+                      style={{
+                        filter: isSelected
+                          ? 'drop-shadow(0px 0px 8px #f59e0b)'
+                          : isHovered
+                          ? 'brightness(1.2)'
+                          : 'none',
+                      }}
+                    />
+                  );
+                })
+              ) : selectedProvincePath ? (
+                /* REGLA ESTRICTA DEL LIENZO PRINCIPAL: Si la ruta activa es una Provincia y no tiene municipios vectoriales en BD,
+                   el Lienzo Principal (Mapa Grande) renderiza la SILUETA DE LA PROVINCIA ACTIVA ocupando el mapa principal */
+                <path
+                  key={`full-prov-main-${selectedProvince.id}`}
+                  id={`full-province-main-path-${selectedProvince.id}`}
+                  d={selectedProvincePath}
+                  fill={getColorForValue(getProvinceValue(selectedProvince.id, selectedMetric), selectedMetric)}
+                  stroke="#10b981"
+                  strokeWidth={2.5}
+                  className="transition-all duration-150 cursor-pointer animate-fade-in"
+                  style={{ filter: 'drop-shadow(0px 4px 10px rgba(16, 185, 129, 0.4))' }}
+                />
+              ) : null}
             </g>
           )}
 
@@ -1290,21 +1362,70 @@ export default function InteractiveMap({
           {/* El mini-mapa del municipio en sí */}
           <div className="relative w-full md:w-1/2 h-44 bg-slate-950 rounded border border-slate-800 overflow-hidden flex items-center justify-center p-2">
             {(() => {
-              const selectedProvincePath = activeProvincePaths.find(p => p.id === selectedProvince.id)?.d || '';
-              const bbox = getPathBBox(selectedProvincePath);
-              const padding = 15;
-              const viewBoxStr = `${bbox.x - padding} ${bbox.y - padding} ${bbox.width + padding * 2} ${bbox.height + padding * 2}`;
-              
-              // Centro de la caja para transformaciones relativas
-              const cx = bbox.x + bbox.width / 2;
-              const cy = bbox.y + bbox.height / 2;
-              
-              // Aplicar pan y escala manual si el usuario los ajusta en el panel
-              const groupTransform = `translate(${miniPanX}, ${miniPanY}) translate(${cx}, ${cy}) scale(${miniScale}) translate(${-cx}, ${-cy})`;
+              // REGLA ESTRICTA DE ASIGNACIÓN DE VISTAS PARA EL RECUADRO SECUNDARIO (MAPA CHICO ABAJO):
+              // 1. Cuando el nivel activo es PAÍS (activeMapLevel === 'country' || 'pais'):
+              //    El Mapa Principal muestra Argentina completa.
+              //    El Recuadro Chico muestra la provincia seleccionada (selectedProvince).
+              // 2. Cuando el nivel activo es PROVINCIA (activeMapLevel !== 'country'):
+              //    El Mapa Principal YA muestra la provincia activa en el lienzo grande.
+              //    El Recuadro Chico debe buscar los municipios o subdivisiones hijas.
+              //    Como aún no existen municipios en la base de datos (array vacío o sin sub-hijos),
+              //    el Recuadro Chico DEBE RENDERIZAR EL LIENZO EN BLANCO VACÍO, sin dibujar nada encima.
 
-              return (
+              const isCountryLevel = activeMapLevel === 'country' || activeMapLevel === 'pais'; // Evalúa si estamos en nivel País
+              const activeSubdivisions = (selectedProvince.municipalities || []).filter(m => !m.paused && m.d && m.d.trim().length > 0); // Filtra municipios vectoriales válidos
+
+              // Caso A: Si estamos navegando en Nivel Provincia y no hay municipios sub-hijos cargados en BD
+              if (!isCountryLevel && activeSubdivisions.length === 0) { // Si la ruta es Provincia y no hay sub-municipios
+                return ( // Devuelve el Lienzo en Blanco Vacío
+                  <svg viewBox="0 0 400 250" className="w-full h-full max-h-40 p-2"> {/* SVG limpio del recuadro chico */}
+                    <defs> {/* Definiciones de la malla técnica */}
+                      <pattern id="mini-blank-grid" width="20" height="20" patternUnits="userSpaceOnUse"> {/* Trama técnica de puntos */}
+                        <path d="M 20 0 L 0 0 0 20" fill="none" stroke="rgba(51, 65, 85, 0.2)" strokeWidth="0.5" /> {/* Trazado de rejilla */}
+                      </pattern> {/* Fin de patrón */}
+                    </defs> {/* Fin de defs */}
+                    <rect width="100%" height="100%" fill="url(#mini-blank-grid)" /> {/* Fondo de rejilla técnica */}
+                    <g className="pointer-events-none select-none"> {/* Grupo de textos informativos */}
+                      <text
+                        x="200"
+                        y="115"
+                        textAnchor="middle"
+                        fill="#64748b"
+                        fontSize="11"
+                        fontWeight="bold"
+                        className="font-sans"
+                      >
+                        Lienzo en Blanco (Sin Desglose)
+                      </text>
+                      <text
+                        x="200"
+                        y="135"
+                        textAnchor="middle"
+                        fill="#475569"
+                        fontSize="9"
+                        className="font-sans"
+                      >
+                        No existen municipios o subdivisiones cargadas
+                      </text>
+                    </g>
+                  </svg>
+                ); // Fin de retorno de Lienzo en Blanco
+              } // Fin del condicional de Lienzo en Blanco
+
+              // Caso B: Cuando la ruta es Nivel País o existen sub-polígonos creados
+              const bbox = getPathBBox(selectedProvincePath); // Bounding Box del trazado provincial
+              const padding = 15; // Margen de holgura
+              const viewBoxStr = bbox && bbox.width > 0 && bbox.height > 0 // Generación condicional de ViewBox
+                ? `${bbox.x - padding} ${bbox.y - padding} ${bbox.width + padding * 2} ${bbox.height + padding * 2}`
+                : "0 0 400 250"; // Fallback seguro
+              
+              const cx = bbox ? bbox.x + bbox.width / 2 : 200; // Centro relativo X
+              const cy = bbox ? bbox.y + bbox.height / 2 : 125; // Centro relativo Y
+              const groupTransform = `translate(${miniPanX}, ${miniPanY}) translate(${cx}, ${cy}) scale(${miniScale}) translate(${-cx}, ${-cy})`; // Transformaciones
+
+              return ( // Renderiza el Mapa Secundario con la silueta o sub-municipios
                 <svg viewBox={viewBoxStr} className="w-full h-full max-h-40 p-2">
-                  {/* Silueta de la provincia seleccionada como guía de fondo (Elegante y precisa) */}
+                  {/* Silueta de la provincia seleccionada como guía de fondo cuando estamos en Nivel País */}
                   {selectedProvincePath && (
                     <path
                       d={selectedProvincePath}
@@ -1317,47 +1438,40 @@ export default function InteractiveMap({
                     />
                   )}
 
-                  {/* Grupo de divisiones de municipios */}
-                  <g id="minimap-municipalities-group" transform={groupTransform}>
-                    {selectedProvince.municipalities.map((muni, idx) => {
-                      if (muni.paused) return null; // Saltar renderizado si está pausado
+                  {/* Grupo de divisiones de municipios si existen polígonos sub-hijos */}
+                  {activeSubdivisions.length > 0 && (
+                    <g id="minimap-municipalities-group" transform={groupTransform}>
+                      {activeSubdivisions.map((muni) => {
+                        const isHovered = hoveredMuni === muni.id;
+                        const isSelected = selectedSubdivisionId === muni.id;
+                        const color = muni.color || getColorForValue(muni.value, selectedMetric);
 
-                      // Si no tiene d de subdivisión específico, hereda el path real completo de la provincia seleccionada
-                      // ¡De esta forma, las formas feas y cuadradas desaparecen por completo y siempre se ve hermoso!
-                      const dPath = muni.d || selectedProvincePath;
-
-                      const isHovered = hoveredMuni === muni.id;
-                      const isSelected = selectedSubdivisionId === muni.id;
-                      
-                      // Color de relleno (color personalizado o según la métrica)
-                      const color = muni.color || getColorForValue(muni.value, selectedMetric);
-
-                      return (
-                        <path
-                          key={muni.id}
-                          d={dPath}
-                          fill={color}
-                          stroke={isSelected ? '#f59e0b' : 'rgba(30, 41, 59, 0.5)'}
-                          strokeWidth={isSelected ? 2 : 1}
-                          className="transition-all duration-150 cursor-pointer"
-                          onClick={() => {
-                            setSelectedSubdivisionId(muni.id);
-                            setEditSubName(muni.name);
-                            setEditSubVal(muni.value);
-                            setEditSubPct(muni.percentage);
-                            // Abrir pestaña de paleta al hacer clic
-                            if (!showManager) setShowManager(true);
-                            setManagerTab('palette');
-                          }}
-                          onMouseEnter={() => setHoveredMuni(muni.id)}
-                          onMouseLeave={() => setHoveredMuni(null)}
-                          style={{
-                            filter: (isHovered || isSelected) ? 'brightness(1.25) drop-shadow(0px 2px 5px rgba(0,0,0,0.4))' : 'none'
-                          }}
-                        />
-                      );
-                    })}
-                  </g>
+                        return (
+                          <path
+                            key={muni.id}
+                            d={muni.d!}
+                            fill={color}
+                            stroke={isSelected ? '#f59e0b' : 'rgba(30, 41, 59, 0.5)'}
+                            strokeWidth={isSelected ? 2 : 1}
+                            className="transition-all duration-150 cursor-pointer"
+                            onClick={() => {
+                              setSelectedSubdivisionId(muni.id);
+                              setEditSubName(muni.name);
+                              setEditSubVal(muni.value);
+                              setEditSubPct(muni.percentage);
+                              if (!showManager) setShowManager(true);
+                              setManagerTab('palette');
+                            }}
+                            onMouseEnter={() => setHoveredMuni(muni.id)}
+                            onMouseLeave={() => setHoveredMuni(null)}
+                            style={{
+                              filter: (isHovered || isSelected) ? 'brightness(1.25) drop-shadow(0px 2px 5px rgba(0,0,0,0.4))' : 'none'
+                            }}
+                          />
+                        );
+                      })}
+                    </g>
+                  )}
                 </svg>
               );
             })()}

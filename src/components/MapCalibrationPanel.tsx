@@ -13,6 +13,7 @@ import {
 import { ProvinceData, NavNode } from '../types'; // Importa la interfaz con el modelo de datos de provincias y nodos universales
 import { getMultiplePathsBBox } from '../lib/mapUtils'; // Helper que calcula la caja de límites (Bounding Box) de trazados vectoriales
 import { safeSetItem } from '../lib/storage'; // Importa el Helper de almacenamiento local seguro
+import { saveNodesBatch } from '../lib/dbService'; // Importa la función de guardado en lote para la base de datos real (Cloud SQL / Drizzle)
 
 // Estructura estandarizada actualizada para soportar capas y estilos visuales
 export interface SVGPathData {
@@ -87,11 +88,14 @@ export default function MapCalibrationPanel({
 
   const activeParentId = activeParentNode.id; // Identificador string del nodo padre activo
 
-  // Función asíncrona para simular la inserción CRUD de nodos vectoriales en la base de datos (tabla geoNodes)
-  const saveNodesToDatabase = async (nodes: any[]) => { // Función de simulación de guardado en BD
+  // Función asíncrona para la inserción y actualización real de nodos vectoriales en la base de datos (tabla geoNodes)
+  const saveNodesToDatabase = async (nodes: any[]) => { // Función asíncrona de guardado en BD
     try { // Inicio del bloque try para captura de excepciones
       console.log("Guardando en BD (geoNodes):", nodes); // Imprime el payload completo preparado para la tabla geoNodes
       
+      // Ejecuta la mutación masiva (batch update/insert) en la base de datos backend (Cloud SQL / Drizzle)
+      await saveNodesBatch(nodes); // Invocación a saveNodesBatch de dbService
+
       // Persistencia en almacenamiento local seguro para preservar los nodos sin pérdida de datos
       safeSetItem('geo_nodes_database', JSON.stringify(nodes)); // Guarda la cadena JSON en localStorage
       
@@ -99,7 +103,7 @@ export default function MapCalibrationPanel({
       showNotify(`[✓] ${nodes.length} nodos guardados en BD bajo el padre "${activeParentNode.name}" (${activeParentId})`); // Muestra toast
       
       // Alerta informativa solicitada
-      alert(`¡Guardado con éxito!\n\nSe han preparado y guardado ${nodes.length} nodos vectoriales para la tabla geoNodes.\n\nNodo Padre (parentId): "${activeParentNode.name}" (ID: ${activeParentId})`); // Muestra alerta modal
+      alert(`¡Guardado con éxito!\n\nSe han guardado exitosamente ${nodes.length} nodos vectoriales en la base de datos (tabla geoNodes).\n\nNodo Padre (parentId): "${activeParentNode.name}" (ID: ${activeParentId})`); // Muestra alerta modal
     } catch (error) { // Captura de errores
       console.error("Error al guardar nodos en la base de datos:", error); // Imprime error en consola
       alert("Ocurrió un error al intentar guardar los nodos en la base de datos."); // Muestra alerta de error
@@ -713,18 +717,69 @@ export default function MapCalibrationPanel({
               </div>
             )}
 
-            {paths.length === 0 ? ( // Muestra la tarjeta informativa si no hay trazados cargados
-              <div className="text-center max-w-sm border border-dashed border-slate-800 p-8 rounded-2xl bg-[#0b1325]/40 backdrop-blur-sm">
-                <Layers className="w-12 h-12 text-slate-600 mx-auto mb-3" /> {/* Icono de capas */}
-                <p className="text-sm font-medium text-slate-400">Ningún mapa importado</p> {/* Título */}
-                <p className="text-xs text-slate-500 mt-1">Subí tu JSON multi-capa para visualizar países, ríos, zonas y separaciones.</p> {/* Descripción */}
-              </div>
-            ) : ( // Si hay trazados cargados renderiza el SVG interactivo
-              <svg
-                viewBox={svgViewBox} // Asigna el viewBox adaptativo memorizado
-                className="w-full h-auto max-h-[75vh] border border-slate-800 rounded-xl bg-[#060a12] shadow-2xl transition-all select-none"
-              >
-                {/* Grupo contenedor con las transformaciones de escala y traslación aplicadas */}
+            {/* RENDERIZADO DEL LIENZO Y MAPA SVG (Soporta Lienzo en Blanco cuando paths.length === 0) */}
+            <svg
+              viewBox={svgViewBox} // Asigna el viewBox adaptativo memorizado o 0 0 800 800 por defecto
+              className="w-full h-auto max-h-[75vh] border border-slate-800 rounded-xl bg-[#060a12] shadow-2xl transition-all select-none relative"
+            >
+              {/* DEFINICIÓN DE PATRÓN DE CUADRÍCULA DE DISEÑO TÉCNICO PARA EL EDITOR */}
+              <defs>
+                <pattern id="editor-grid-pattern" width="40" height="40" patternUnits="userSpaceOnUse">
+                  <path d="M 40 0 L 0 0 0 40" fill="none" stroke="rgba(51, 65, 85, 0.2)" strokeWidth="0.8" />
+                </pattern>
+              </defs>
+
+              {/* FONDO DE CUADRÍCULA SIEMPRE VISIBLE */}
+              <rect width="100%" height="100%" fill="url(#editor-grid-pattern)" />
+
+              {/* FASE 2: ESTADO VACÍO EN EL LIENZO EN BLANCO CUANDO NO HAY DIBUJOS AÚN */}
+              {paths.length === 0 ? (
+                <g id="blank-canvas-editor-group" className="pointer-events-none select-none">
+                  <circle cx="400" cy="330" r="40" fill="rgba(16, 185, 129, 0.05)" stroke="rgba(16, 185, 129, 0.2)" strokeWidth="1.5" />
+                  <text
+                    x="400"
+                    y="335"
+                    textAnchor="middle"
+                    fill="#34d399"
+                    fontSize="22"
+                    fontWeight="bold"
+                  >
+                    🎨
+                  </text>
+                  <text
+                    x="400"
+                    y="390"
+                    textAnchor="middle"
+                    fill="#cbd5e1"
+                    fontSize="18"
+                    fontWeight="bold"
+                    className="font-sans"
+                  >
+                    Lienzo en Blanco
+                  </text>
+                  <text
+                    x="400"
+                    y="420"
+                    textAnchor="middle"
+                    fill="#64748b"
+                    fontSize="13"
+                    className="font-sans"
+                  >
+                    Hacé clic en "Cargar Mapa Multicapa JSON" arriba para importar polígonos
+                  </text>
+                  <text
+                    x="400"
+                    y="445"
+                    textAnchor="middle"
+                    fill="#475569"
+                    fontSize="11"
+                    className="font-mono"
+                  >
+                    Nodo Padre Activo: {activeParentNode.name} ({activeParentId})
+                  </text>
+                </g>
+              ) : (
+                /* Grupo contenedor con las transformaciones de escala y traslación aplicadas */
                 <g transform={`translate(${translateX}, ${translateY}) scale(${scale})`}>
                   {paths.map((path) => { // Recorre el arreglo de trazados vectoriales
                     const isSelected = path.id === selectedId; // Verifica si el elemento está seleccionado
@@ -756,9 +811,9 @@ export default function MapCalibrationPanel({
                       />
                     ); // Fin del path SVG
                   })}
-                </g> {/* Fin del grupo con transformaciones */}
-              </svg>
-            )}
+                </g>
+              )}
+            </svg>
           </div>
         </div>
 
