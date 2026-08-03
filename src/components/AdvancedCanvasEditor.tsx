@@ -29,30 +29,40 @@ interface AdvancedCanvasEditorProps {
 const geoJsonCoordsToSvgPath = (type: string, coordinates: any[]): string => {
   if (!coordinates || !Array.isArray(coordinates) || coordinates.length === 0) return '';
   
+  // Detecta si las coordenadas son lat/long geográficas (lat entre -90 y 90) o espacio de píxeles en pantalla (y > 90)
+  let isGeoLatLong = true;
+  const sampleRing = type === 'Polygon' ? coordinates[0] : (type === 'MultiPolygon' ? coordinates[0]?.[0] : coordinates);
+  if (Array.isArray(sampleRing) && sampleRing.length > 0) {
+    const firstPt = sampleRing[0];
+    if (Array.isArray(firstPt) && firstPt.length >= 2) {
+      if (Math.abs(firstPt[1]) > 90) {
+        // Píxeles de pantalla: NO invertir el eje Y
+        isGeoLatLong = false;
+      }
+    }
+  }
+
+  const formatPt = (pt: any[], idx: number) => {
+    if (!Array.isArray(pt) || pt.length < 2) return '';
+    const x = pt[0];
+    const y = isGeoLatLong ? -pt[1] : pt[1];
+    return `${idx === 0 ? 'M' : 'L'} ${x} ${y}`;
+  };
+
   if (type === 'Polygon') {
-    // Las coordenadas de un Polígono son anillos: [ [ [x, y], [x, y], ... ] ]
     return coordinates.map(ring => {
       if (!Array.isArray(ring) || ring.length === 0) return '';
-      const points = ring.map((pt, idx) => {
-        if (!Array.isArray(pt) || pt.length < 2) return '';
-        const x = pt[0];
-        const y = -pt[1]; // Invierte latitud para mantener orientación SVG correcta
-        return `${idx === 0 ? 'M' : 'L'} ${x} ${y}`;
-      }).filter(Boolean).join(' ');
+      const points = ring.map(formatPt).filter(Boolean).join(' ');
       return points ? `${points} Z` : '';
     }).filter(Boolean).join(' ');
   }
   
   if (type === 'MultiPolygon') {
-    // Coordenadas de MultiPolígono: arreglo de polígonos
     return coordinates.map(poly => geoJsonCoordsToSvgPath('Polygon', poly)).filter(Boolean).join(' ');
   }
 
   if (type === 'LineString') {
-    const points = coordinates.map((pt, idx) => {
-      if (!Array.isArray(pt) || pt.length < 2) return '';
-      return `${idx === 0 ? 'M' : 'L'} ${pt[0]} ${-pt[1]}`;
-    }).filter(Boolean).join(' ');
+    const points = coordinates.map(formatPt).filter(Boolean).join(' ');
     return points;
   }
 
@@ -78,136 +88,229 @@ const polygonPointsToSvgPath = (pointsStr: string): string => {
 
 // FUNCIÓN SANITIZADORA PARA CONVERTIR EXPORTACIONES JS/TS O TEXTO CON COMENTARIOS A JSON PURO
 const sanitizeJsonString = (rawContent: string): string => {
-  if (!rawContent) return ''; // Retorna cadena vacía si no hay contenido
-  let cleaned = rawContent.trim(); // Elimina espacios iniciales y finales
+  if (!rawContent) return '';
+  let cleaned = rawContent.trim();
 
-  // 1. Elimina comentarios multilinea /* ... */ y de una sola linea // ...
-  cleaned = cleaned.replace(/\/\*[\s\S]*?\*\//g, ''); // Remueve bloques /* */
-  cleaned = cleaned.replace(/\/\/.*/g, ''); // Remueve líneas //
+  // 1. Remueve comentarios multilinea /* ... */ y de una sola linea // ...
+  cleaned = cleaned.replace(/\/\*[\s\S]*?\*\//g, '');
+  cleaned = cleaned.replace(/\/\/.*/g, '');
 
-  // 2. Remueve asignaciones iniciales de JS (ej: const data =, let data =, var data =, export default)
-  cleaned = cleaned.replace(/^(?:export\s+default\s+|const\s+[\w$]+\s*=\s*|var\s+[\w$]+\s*=\s*|let\s+[\w$]+\s*=\s*|module\.exports\s*=\s*)/i, '');
+  // 2. Remueve asignaciones e importaciones iniciales de JS/TS (ej: import ..., const data =, export default)
+  cleaned = cleaned.replace(/^import\s+[\s\S]*?;\s*/gi, '');
+  cleaned = cleaned.replace(/^(?:export\s+default\s+|const\s+[\w$]+(?::\s*[^=]+)?\s*=\s*|var\s+[\w$]+\s*=\s*|let\s+[\w$]+\s*=\s*|module\.exports\s*=\s*)/i, '');
 
   // 3. Remueve punto y coma final e instrucciones export default finales
   cleaned = cleaned.replace(/(?:;\s*export\s+default\s+[\w$]+;?|;\s*module\.exports\s*=\s*[\w$]+;?|;?\s*)$/i, '');
 
-  cleaned = cleaned.trim(); // Limpia espacios sobrantes
+  cleaned = cleaned.trim();
 
   // 4. Extrae la estructura JSON principal desde el primer { o [ hasta el último } o ]
-  const firstBrace = cleaned.search(/[\{\[]/); // Busca el primer { o [
-  const lastBrace = Math.max(cleaned.lastIndexOf('}'), cleaned.lastIndexOf(']')); // Busca el último } o ]
+  const firstBrace = cleaned.search(/[\{\[]/);
+  const lastBrace = Math.max(cleaned.lastIndexOf('}'), cleaned.lastIndexOf(']'));
 
-  if (firstBrace !== -1 && lastBrace !== -1 && lastBrace > firstBrace) { // Si halló delimitadores válidos
-    cleaned = cleaned.substring(firstBrace, lastBrace + 1); // Extrae la porción JSON pura
+  if (firstBrace !== -1 && lastBrace !== -1 && lastBrace > firstBrace) {
+    cleaned = cleaned.substring(firstBrace, lastBrace + 1);
   }
 
-  return cleaned; // Retorna la cadena limpia lista para JSON.parse
+  return cleaned;
 };
 
-// Auxiliar: Parser inteligente con asistencia de IA para estructurar SVG, GeoJSON o JSON raw
+// Auxiliar: Parser inteligente con asistencia de IA universal para estructurar SVG, GeoJSON, JS/TSX o JSON raw
 const parseVectorContentWithAI = (
   content: string,
   fileName: string,
   ownerId: string,
   level: string
 ): { paths: VectorPathItem[]; title?: string } => {
-  const trimmed = content.trim(); // Cadena original limpia
-  const sanitized = sanitizeJsonString(content); // Sanitización de wrappers JS/TS a JSON puro
-  let importedPaths: VectorPathItem[] = []; // Arreglo acumulador de trazados
-  let detectedTitle = ''; // Título detectado
+  const trimmed = content.trim();
+  const sanitized = sanitizeJsonString(content);
+  let importedPaths: VectorPathItem[] = [];
+  let detectedTitle = '';
 
-  // 1. INTENTAR PARSEAR COMO JSON ESTRUCTURADO (GeoJSON, JSON Array o Objeto)
-  const jsonToParse = sanitized.length > 0 ? sanitized : trimmed; // Elige la mejor versión de cadena
-  if (jsonToParse.startsWith('{') || jsonToParse.startsWith('[')) { // Comprueba si tiene formato JSON
+  // Helper para normalizar cualquier elemento en VectorPathItem preservando todos sus metadatos y estilos
+  const normalizePathItem = (item: any, idx: number, defaultLayer?: string): VectorPathItem | null => {
+    if (!item || typeof item !== 'object') return null;
+
+    let pathD = item.d || item.path || item.svgPath || '';
+    if (!pathD && item.geometry) {
+      if (typeof item.geometry === 'string') {
+        pathD = item.geometry;
+      } else if (item.geometry.coordinates) {
+        if (item.properties && item.properties.d) {
+          pathD = item.properties.d;
+        } else {
+          pathD = geoJsonCoordsToSvgPath(item.geometry.type, item.geometry.coordinates);
+        }
+      }
+    }
+
+    if (!pathD || typeof pathD !== 'string' || pathD.trim().length === 0) return null;
+
+    const props = item.properties || item.customData || {};
+    const id = String(item.id || props.id || props.ISO_A2 || props.id_0 || `PATH-${idx + 1}`);
+    const name = String(item.name || item.title || item.label || item.nombre || props.name || props.NAME || props.nombre || props.NAME_1 || props.ADMIN || props.STATE_NAME || `Trazado ${idx + 1}`);
+    const category = String(item.layer || item.layerId || item.category || props.layer || props.category || defaultLayer || level || 'provincia');
+    
+    const fill = item.fill || item.fillColor || item.visualStyles?.fillColor || props.fill || props.fillColor;
+    const stroke = item.stroke || item.strokeColor || item.visualStyles?.strokeColor || props.stroke || props.strokeColor;
+    const strokeWidth = item.strokeWidth || item['stroke-width'] || item.visualStyles?.strokeWidth || props.strokeWidth || props['stroke-width'];
+
+    return {
+      id,
+      name,
+      d: pathD.trim(),
+      category,
+      ownerId,
+      visualStyles: {
+        fillColor: fill,
+        strokeColor: stroke,
+        strokeWidth: typeof strokeWidth === 'number' ? strokeWidth : (strokeWidth ? Number(strokeWidth) : undefined)
+      },
+      customData: {
+        fill,
+        stroke,
+        strokeWidth,
+        layer: category,
+        ...props
+      }
+    };
+  };
+
+  // RECURSIVE EXTRACTOR: Explora cualquier árbol de datos JS/TS/JSON
+  const extractFromObject = (obj: any, currentLayer?: string) => {
+    if (!obj) return;
+
+    if (Array.isArray(obj)) {
+      obj.forEach((child, i) => extractFromObject(child, currentLayer));
+      return;
+    }
+
+    if (typeof obj === 'object') {
+      // 1. GeoJSON FeatureCollection
+      if (obj.type === 'FeatureCollection' && Array.isArray(obj.features)) {
+        if (obj.name) detectedTitle = obj.name;
+        obj.features.forEach((feat: any) => {
+          const norm = normalizePathItem(feat, importedPaths.length, currentLayer);
+          if (norm) importedPaths.push(norm);
+        });
+        return;
+      }
+
+      // 2. Elemento individual con trazado
+      if (obj.d || obj.path || (obj.type === 'Feature' && (obj.geometry || obj.properties?.d))) {
+        const norm = normalizePathItem(obj, importedPaths.length, currentLayer);
+        if (norm) {
+          importedPaths.push(norm);
+          return;
+        }
+      }
+
+      // 3. Diccionarios por Capas (Format 2 Componente TSX Record<string, Array<...>>) u objetos contenedores
+      const layerName = obj.layer || obj.layerId || obj.name || obj.id || currentLayer;
+      for (const key of Object.keys(obj)) {
+        const val = obj[key];
+        if (Array.isArray(val)) {
+          const effectiveLayer = (key !== 'paths' && key !== 'features' && key !== 'children' && key !== 'layers' && key !== 'groups') ? key : layerName;
+          extractFromObject(val, effectiveLayer);
+        } else if (typeof val === 'object' && val !== null && key !== 'properties' && key !== 'customData' && key !== 'visualStyles') {
+          extractFromObject(val, layerName);
+        }
+      }
+    }
+  };
+
+  // 1. INTENTAR PARSEAR COMO ESTRUCTURA JSON / JS
+  const jsonToParse = sanitized.length > 0 ? sanitized : trimmed;
+  if (jsonToParse.startsWith('{') || jsonToParse.startsWith('[')) {
     try {
-      const parsed = JSON.parse(jsonToParse); // Ejecuta el parseo JSON de forma segura
-
-      // CASO A: GeoJSON estándar (FeatureCollection)
-      if (parsed.type === 'FeatureCollection' && Array.isArray(parsed.features)) {
-        detectedTitle = parsed.name || fileName.replace(/\.[^/.]+$/, "");
-        importedPaths = parsed.features.map((feature: any, idx: number) => {
-          const props = feature.properties || {};
-          const name = props.name || props.NAME || props.nombre || props.NAME_1 || props.ADMIN || props.STATE_NAME || props.id || `Región ${idx + 1}`;
-          const geom = feature.geometry || {};
-          const pathD = geoJsonCoordsToSvgPath(geom.type, geom.coordinates);
-          return {
-            id: String(props.id || props.ISO_A2 || props.id_0 || `GEO-${idx + 1}`),
-            name: String(name),
-            d: pathD,
-            category: level || 'provincia',
-            ownerId
-          };
-        }).filter(p => p.d && p.d.length > 0);
-      }
-      // CASO B: Arreglo JSON directo [{ id, name, d }, ...]
-      else if (Array.isArray(parsed)) {
-        importedPaths = parsed.map((item: any, idx: number) => {
-          let pathD = item.d || item.path || '';
-          if (!pathD && item.geometry) {
-            pathD = geoJsonCoordsToSvgPath(item.geometry.type, item.geometry.coordinates);
-          }
-          return {
-            id: String(item.id || `IMPORTED-${idx + 1}`),
-            name: String(item.name || item.title || item.label || item.nombre || `Trazado ${idx + 1}`),
-            d: pathD,
-            category: item.category || level || 'provincia',
-            ownerId
-          };
-        }).filter(p => p.d && p.d.length > 0);
-      }
-      // CASO C: Objeto JSON con propiedad paths o features
-      else if (parsed.paths && Array.isArray(parsed.paths)) {
-        detectedTitle = parsed.title || parsed.name || '';
-        importedPaths = parsed.paths.map((item: any, idx: number) => ({
-          id: String(item.id || `IMPORTED-${idx + 1}`),
-          name: String(item.name || item.title || item.label || `Trazado ${idx + 1}`),
-          d: item.d || item.path || '',
-          category: item.category || level || 'provincia',
-          ownerId
-        })).filter(p => p.d && p.d.length > 0);
-      }
-      else if (parsed.features && Array.isArray(parsed.features)) {
-        importedPaths = parsed.features.map((feature: any, idx: number) => {
-          const props = feature.properties || {};
-          const name = props.name || props.NAME || props.nombre || `Región ${idx + 1}`;
-          const geom = feature.geometry || {};
-          const pathD = geoJsonCoordsToSvgPath(geom.type, geom.coordinates);
-          return {
-            id: String(props.id || `GEO-${idx + 1}`),
-            name: String(name),
-            d: pathD,
-            category: level || 'provincia',
-            ownerId
-          };
-        }).filter(p => p.d && p.d.length > 0);
-      }
+      const parsed = JSON.parse(jsonToParse);
+      extractFromObject(parsed);
     } catch (e) {
-      console.warn("No es un JSON puro, intentando como SVG...", e);
+      console.warn("Error en parseo JSON directo, intentando por expresiones regulares / SVG...", e);
     }
   }
 
-  // 2. SI NO ES JSON O NO TIENE TRAZADOS, EXTRAER ETIQUETAS DEL SVG
+  // 2. SI NO SE HALLARON POLÍGONOS, PROBAR CON EXPRESIONES REGULARES JS/TSX
   if (importedPaths.length === 0) {
-    // Extraer etiquetas <path d="...">
+    const jsObjRegex = /\{\s*["']?id["']?\s*:\s*["']([^"']+)["'][\s\S]*?["']?d["']?\s*:\s*["']([^"']+)["'][\s\S]*?\}/gi;
+    const jsMatches = [...trimmed.matchAll(jsObjRegex)];
+    if (jsMatches.length > 0) {
+      jsMatches.forEach((m, idx) => {
+        const fullBlock = m[0];
+        const idMatch = fullBlock.match(/["']?id["']?\s*:\s*["']([^"']+)["']/i);
+        const nameMatch = fullBlock.match(/["']?(?:name|title|label|nombre)["']?\s*:\s*["']([^"']+)["']/i);
+        const dMatch = fullBlock.match(/["']?d["']?\s*:\s*["']([^"']+)["']/i);
+        const fillMatch = fullBlock.match(/["']?fill["']?\s*:\s*["']([^"']+)["']/i);
+        const strokeMatch = fullBlock.match(/["']?stroke["']?\s*:\s*["']([^"']+)["']/i);
+        const layerMatch = fullBlock.match(/["']?(?:layer|layerId|category)["']?\s*:\s*["']([^"']+)["']/i);
+
+        if (dMatch && dMatch[1]) {
+          const fill = fillMatch ? fillMatch[1] : undefined;
+          const stroke = strokeMatch ? strokeMatch[1] : undefined;
+          const layer = layerMatch ? layerMatch[1] : level || 'provincia';
+          importedPaths.push({
+            id: idMatch ? idMatch[1] : `JS-PATH-${idx + 1}`,
+            name: nameMatch ? nameMatch[1] : `Trazado ${idx + 1}`,
+            d: dMatch[1],
+            category: layer,
+            ownerId,
+            visualStyles: { fillColor: fill, strokeColor: stroke },
+            customData: { fill, stroke, layer }
+          });
+        }
+      });
+    }
+  }
+
+  // 3. EXTRAER ETIQUETAS SVG COMPLETA (<path d="...">, <polygon points="...">)
+  if (importedPaths.length === 0) {
     const pathRegex = /<path[^>]*d=["']([^"']+)["'][^>]*>/gi;
     const pathMatches = [...trimmed.matchAll(pathRegex)];
     if (pathMatches.length > 0) {
       pathMatches.forEach((m, idx) => {
         const fullTag = m[0];
-        const idMatch = fullTag.match(/id=["']([^"']+)["']/i);
-        const nameMatch = fullTag.match(/(?:title|name|inkscape:label)=["']([^"']+)["']/i);
-        
+        const idMatch = fullTag.match(/(?:id|data-id)=["']([^"']+)["']/i);
+        const nameMatch = fullTag.match(/(?:title|name|data-name|inkscape:label)=["']([^"']+)["']/i);
+        const fillMatch = fullTag.match(/fill=["']([^"']+)["']/i);
+        const strokeMatch = fullTag.match(/stroke=["']([^"']+)["']/i);
+        const strokeWidthMatch = fullTag.match(/stroke-width=["']([^"']+)["']/i);
+        const layerMatch = fullTag.match(/(?:data-layer|layer)=["']([^"']+)["']/i);
+        const propsMatch = fullTag.match(/data-properties=["']([^"']+)["']/i);
+
+        let parsedProps = {};
+        if (propsMatch && propsMatch[1]) {
+          try {
+            parsedProps = JSON.parse(propsMatch[1]);
+          } catch {}
+        }
+
+        const fill = fillMatch ? fillMatch[1] : undefined;
+        const stroke = strokeMatch ? strokeMatch[1] : undefined;
+        const strokeWidth = strokeWidthMatch ? Number(strokeWidthMatch[1]) : undefined;
+        const layer = layerMatch ? layerMatch[1] : level || 'provincia';
+
         importedPaths.push({
           id: idMatch ? idMatch[1] : `SVG-PATH-${idx + 1}`,
           name: nameMatch ? nameMatch[1] : `Trazado SVG ${idx + 1}`,
           d: m[1],
-          category: level || 'provincia',
-          ownerId
+          category: layer,
+          ownerId,
+          visualStyles: {
+            fillColor: fill,
+            strokeColor: stroke,
+            strokeWidth
+          },
+          customData: {
+            fill,
+            stroke,
+            strokeWidth,
+            layer,
+            ...parsedProps
+          }
         });
       });
     }
 
-    // Extraer etiquetas <polygon points="...">
     const polyRegex = /<polygon[^>]*points=["']([^"']+)["'][^>]*>/gi;
     const polyMatches = [...trimmed.matchAll(polyRegex)];
     if (polyMatches.length > 0) {
@@ -229,7 +332,7 @@ const parseVectorContentWithAI = (
     }
   }
 
-  return { paths: importedPaths, title: detectedTitle };
+  return { paths: importedPaths, title: detectedTitle || fileName.replace(/\.[^/.]+$/, "") };
 };
 
 // Función auxiliar para construir el mapa contextual en base al nivel activo y la región seleccionada
@@ -324,15 +427,21 @@ const getInitialContextualMap = (
     }
   }
 
-  // 4. Para Mundo, Continente o cualquier región vacía / sin datos vectoriales previa, iniciar con LIENZO EN BLANCO (paths: [])
+  // 4. Para cualquier otra región o vista por defecto, hereda automáticamente los 24 trazados nativos de provincePaths.ts
   return {
-    id: `map-nuevo-${province ? province.id.toLowerCase() : 'custom'}`,
-    title: `Lienzo de Importación - ${province ? province.name : 'Mundo / Nueva Región'}`,
-    level: province ? (province.id === 'WORLD_MAP' ? 'mundo' : province.id === 'CONTINENT_MAP' ? 'continente' : 'pais') : 'mundo',
+    id: `map-nuevo-${province ? province.id.toLowerCase() : 'argentina'}`,
+    title: `Lienzo Vectorial - ${province ? province.name : 'Argentina (24 Provincias)'}`,
+    level: province ? (province.id === 'WORLD_MAP' ? 'mundo' : province.id === 'CONTINENT_MAP' ? 'continente' : 'pais') : 'pais',
     parentId: urlParentId || 'WORLD',
     ownerId: 'system',
     isApproved: true,
-    paths: [], // LIENZO VACÍO PARA MUNDO Y OTRAS REGIONES
+    paths: provincePaths.map(p => ({
+      id: p.id,
+      name: p.name,
+      d: p.d,
+      category: 'provincia',
+      ownerId: 'system'
+    })),
     transform: {
       scale: 1,
       translateX: 0,
@@ -378,25 +487,81 @@ export default function AdvancedCanvasEditor({
     return getInitialContextualMap(selectedProvince, urlParentId);
   });
 
-  // SINCRONIZAR EL MAPA EN EDICIÓN CUANDO EL USUARIO CAMBIA DE REGIÓN O PROVINCIA DESDE NAVEGACIÓN
+  // ESTADO DE APERTURA DE PANELES MODALES Y TEXTO CÓDIGO JSON EN CALIENTE (FASE 3 - AUTO-FILL & BINDING)
+  const [showJsonImportModal, setShowJsonImportModal] = useState<boolean>(false); // Modal para pegar/editar JSON
+  const [rawJsonText, setRawJsonText] = useState<string>(() => {
+    // Carga inicial obligatoria: si mapEntity tiene paths los usa, de lo contrario formatea provincePaths
+    const activePaths = (mapEntity && Array.isArray(mapEntity.paths) && mapEntity.paths.length > 0)
+      ? mapEntity.paths
+      : provincePaths.map(p => ({ id: p.id, name: p.name, d: p.d, category: 'provincia', ownerId: 'system' }));
+    return JSON.stringify(activePaths, null, 2);
+  });
+
+  // SINCRONIZAR EL MAPA EN EDICIÓN Y AUTO-FILL EN MONTAJE
   useEffect(() => {
     const provKey = selectedProvince?.id || 'country';
     const saved = safeGetItem(`argentina_advanced_canvas_map_${provKey}`);
+    let entityToSet: VectorMapEntity;
+
     if (saved) {
       try {
         const parsed = JSON.parse(saved);
-        if (parsed && Array.isArray(parsed.paths)) {
-          setMapEntity(parsed);
-          setSelectedPathIds([]);
-          return;
+        if (parsed && Array.isArray(parsed.paths) && parsed.paths.length > 0) {
+          entityToSet = parsed;
+        } else {
+          entityToSet = getInitialContextualMap(selectedProvince, urlParentId);
         }
       } catch (e) {
         console.error("Error al sincronizar mapa guardado:", e);
+        entityToSet = getInitialContextualMap(selectedProvince, urlParentId);
+      }
+    } else {
+      entityToSet = getInitialContextualMap(selectedProvince, urlParentId);
+    }
+
+    // Herencia Automática: Si la entidad no posee polígonos, fuerza provincePaths
+    if (!entityToSet.paths || entityToSet.paths.length === 0) {
+      entityToSet.paths = provincePaths.map(p => ({
+        id: p.id,
+        name: p.name,
+        d: p.d,
+        category: 'provincia',
+        ownerId: 'system'
+      }));
+    }
+
+    setMapEntity(entityToSet);
+    setSelectedPathIds([]);
+
+    // Auto-Fill Inmediato del textarea en montaje (REGLA 1 FASE 3)
+    try {
+      setRawJsonText(JSON.stringify(entityToSet.paths, null, 2));
+    } catch (err) {
+      console.error("Error al formatear JSON inicial:", err);
+    }
+  }, [selectedProvince?.id, urlParentId]);
+
+  // Sincronización continua Visual -> Código: Mantiene rawJsonText actualizado cuando cambian los polígonos en lienzo
+  useEffect(() => {
+    if (mapEntity && Array.isArray(mapEntity.paths) && mapEntity.paths.length > 0) {
+      try {
+        const formatted = JSON.stringify(mapEntity.paths, null, 2);
+        try {
+          if (rawJsonText && rawJsonText.trim().length > 0) {
+            const currentParsed = JSON.parse(sanitizeJsonString(rawJsonText));
+            if (JSON.stringify(currentParsed) === JSON.stringify(mapEntity.paths)) {
+              return;
+            }
+          }
+        } catch {
+          // Si el texto en rawJsonText se está tipeando manualmente y tiene error sintáctico temporal, no sobrescribir
+        }
+        setRawJsonText(formatted);
+      } catch (e) {
+        console.error("Error al sincronizar rawJsonText en AdvancedCanvasEditor:", e);
       }
     }
-    setMapEntity(getInitialContextualMap(selectedProvince, urlParentId));
-    setSelectedPathIds([]);
-  }, [selectedProvince?.id, urlParentId]);
+  }, [mapEntity.paths]);
 
   // ESTADO DE SELECCIÓN DE PATHS (SELECCIÓN MÚLTIPLE COMPATIBLE)
   const [selectedPathIds, setSelectedPathIds] = useState<string[]>([]); // Lista de IDs seleccionados
@@ -449,10 +614,6 @@ export default function AdvancedCanvasEditor({
     setIsStalled(false); // Oculta temporalmente la advertencia de demora
     showNotify("[⏳] Tiempo de espera extendido. El asistente continúa procesando los nodos vectoriales..."); // Notifica al usuario
   };
-
-  // ESTADO DE APERTURA DE PANELES MODALES
-  const [showJsonImportModal, setShowJsonImportModal] = useState<boolean>(false); // Modal para pegar JSON
-  const [rawJsonText, setRawJsonText] = useState<string>(''); // Texto JSON ingresado libremente
 
   // REFERENCIA AL SVG
   const svgRef = useRef<SVGSVGElement | null>(null); // Referencia al nodo SVG en el DOM
@@ -741,9 +902,17 @@ export default function AdvancedCanvasEditor({
       const updatedMunicipalities = mapEntity.paths.map(p => ({
         id: p.id,
         name: p.name,
-        value: 0,
-        percentage: 0,
-        d: p.d
+        value: p.customData?.valor || p.customData?.value || 0,
+        percentage: p.customData?.porcentaje || p.customData?.percentage || 0,
+        d: p.d,
+        color: p.customData?.fill || p.visualStyles?.fillColor || p.fill,
+        layer: p.category || p.customData?.layer || selectedProvince.name,
+        visualStyles: {
+          fillColor: p.customData?.fill || p.visualStyles?.fillColor || p.fill,
+          strokeColor: p.customData?.stroke || p.visualStyles?.strokeColor || p.stroke,
+          strokeWidth: p.customData?.strokeWidth || p.visualStyles?.strokeWidth || p.strokeWidth
+        },
+        customData: p.customData || {}
       }));
 
       onUpdateProvince({
@@ -855,9 +1024,17 @@ export default function AdvancedCanvasEditor({
               municipalities: importedPaths.map(p => ({
                 id: p.id,
                 name: p.name,
-                value: 0,
-                percentage: 0,
-                d: p.d
+                value: p.customData?.valor || p.customData?.value || 0,
+                percentage: p.customData?.porcentaje || p.customData?.percentage || 0,
+                d: p.d,
+                color: p.customData?.fill || p.visualStyles?.fillColor || p.fill,
+                layer: p.category || p.customData?.layer || selectedProvince.name,
+                visualStyles: {
+                  fillColor: p.customData?.fill || p.visualStyles?.fillColor || p.fill,
+                  strokeColor: p.customData?.stroke || p.visualStyles?.strokeColor || p.stroke,
+                  strokeWidth: p.customData?.strokeWidth || p.visualStyles?.strokeWidth || p.strokeWidth
+                },
+                customData: p.customData || {}
               })),
               mapTransform: {
                 scale: updatedEntity.transform.scale,
@@ -1268,6 +1445,11 @@ export default function AdvancedCanvasEditor({
                 {/* RENDERIZADO DE TODOS LOS TRAZOS VECTORIALES */}
                 {mapEntity.paths.map(p => {
                   const isSelected = selectedPathIds.includes(p.id);
+                  const pathFill = p.customData?.fill || p.visualStyles?.fillColor || p.fill || '#1e293b';
+                  const pathStroke = p.customData?.stroke || p.visualStyles?.strokeColor || p.stroke || '#475569';
+                  const baseStrokeWidth = p.customData?.strokeWidth || p.visualStyles?.strokeWidth || p.strokeWidth || 1;
+                  const computedStrokeWidth = (isSelected ? baseStrokeWidth * 2 : baseStrokeWidth) / mapEntity.transform.scale;
+
                   return (
                     <path
                       key={p.id}
@@ -1276,11 +1458,11 @@ export default function AdvancedCanvasEditor({
                         e.stopPropagation();
                         handleToggleSelectPath(p.id, e.ctrlKey || e.metaKey || e.shiftKey);
                       }}
-                      className="cursor-pointer transition-all duration-150 hover:fill-emerald-600/30"
-                      fill={isSelected ? '#10b981' : '#1e293b'}
-                      fillOpacity={isSelected ? 0.5 : 0.7}
-                      stroke={isSelected ? '#34d399' : '#475569'}
-                      strokeWidth={isSelected ? 2 / mapEntity.transform.scale : 1 / mapEntity.transform.scale}
+                      className="cursor-pointer transition-all duration-150 hover:opacity-80"
+                      fill={isSelected ? '#10b981' : pathFill}
+                      fillOpacity={isSelected ? 0.8 : 0.7}
+                      stroke={isSelected ? '#34d399' : pathStroke}
+                      strokeWidth={computedStrokeWidth}
                     />
                   );
                 })}

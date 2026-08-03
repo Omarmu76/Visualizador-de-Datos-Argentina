@@ -139,6 +139,14 @@ export interface VectorPathItem {
   parentId?: string; // ID del nodo o territorio padre ('WORLD', 'BRA', etc.)
   referenceMapId?: string; // Mapa de referencia padre para la auto-acomodación
   isApproved?: boolean; // Indica si el Super Admin ha aprobado este mapa para publicación global
+  fill?: string; // Color de relleno directo
+  stroke?: string; // Color de contorno directo
+  strokeWidth?: number; // Grosor de contorno directo
+  visualStyles?: {
+    fillColor?: string;
+    strokeColor?: string;
+    strokeWidth?: number;
+  };
   transform?: { scale: number; translateX: number; translateY: number }; // Transformaciones individuales del trazo
   customData?: Record<string, any>; // Metadatos libres adicionales adjuntos al polígono
 }

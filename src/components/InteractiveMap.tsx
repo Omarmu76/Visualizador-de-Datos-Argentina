@@ -12,14 +12,12 @@ import {
   ZoomOut, 
   Compass, 
   Settings, 
-  Trash2, 
-  Play, 
-  Pause, 
+  Trash2,
+  Play,
+  Pause,
   Plus, 
-  RefreshCw, 
   Palette, 
   Layers, 
-  HelpCircle,
   X,
   Globe,
   HeartPulse,
@@ -27,7 +25,7 @@ import {
   Cpu,
   Grid,
   Navigation
-} from 'lucide-react'; // Importación de íconos vectoriales para la interfaz interactiva con Navigation incluida
+} from 'lucide-react'; // Importación de íconos vectoriales para la interfaz interactiva
 import { provincePaths } from '../data/provincePaths'; // Importación de los trazos vectoriales de las provincias argentinas
 import { MetricType, ProvinceData, MunicipalityData, RegionNode, NavNode } from '../types'; // Importación del modelo de tipos de datos y nodos universales
 import { mockProvincesData } from '../data/mockData'; // Importación de datos mock de provincias

@@ -8,9 +8,22 @@ import {
   Search, // Icono para la barra de búsqueda en listas
   CheckCircle2, // Icono para confirmaciones y notificaciones tipo toast
   MapPin, // Icono para marcadores de mapa y territorio
-  Maximize2 // Icono para la acción de auto-ajuste y centrado del mapa
+  Maximize2, // Icono para la acción de auto-ajuste y centrado del mapa
+  Image as ImageIcon, // Icono para la carga de imagen de calco
+  Wand2, // Icono para el motor de autovectorización
+  Sparkles, // Icono para indicar generación automática
+  Eye, // Icono para visibilidad
+  EyeOff, // Icono para ocultar
+  RotateCcw, // Icono para restablecer
+  Code2, // Icono para la pestaña del editor JSON en caliente
+  FileCode, // Icono para aplicar código
+  Copy, // Icono para copiar JSON
+  Check, // Icono para estado sincronizado
+  AlertCircle, // Icono para alertas de sintaxis JSON inválida
+  Sliders // Icono para inspector de propiedades
 } from 'lucide-react'; // Biblioteca lucide-react para la interfaz de usuario
 import { ProvinceData, NavNode } from '../types'; // Importa la interfaz con el modelo de datos de provincias y nodos universales
+import { provincePaths } from '../data/provincePaths'; // Importación del molde vectorial nativo de Argentina
 import { getMultiplePathsBBox } from '../lib/mapUtils'; // Helper que calcula la caja de límites (Bounding Box) de trazados vectoriales
 import { safeSetItem } from '../lib/storage'; // Importa el Helper de almacenamiento local seguro
 import { saveNodesBatch } from '../lib/dbService'; // Importa la función de guardado en lote para la base de datos real (Cloud SQL / Drizzle)
@@ -37,6 +50,51 @@ interface MapCalibrationPanelProps {
   onUpdateMapLevels?: (levels: { id: string; name: string }[]) => void; // Callback para modificar los niveles de mapas
   navPath?: NavNode[]; // Arreglo del historial de navegación dinámico universal (Motor Vectorial)
 }
+
+// Auxiliar: Convierte coordenadas de anillos GeoJSON a trazados de comando SVG 'd'
+const geoJsonCoordsToSvgPath = (type: string, coordinates: any[]): string => {
+  if (!coordinates || !Array.isArray(coordinates) || coordinates.length === 0) return '';
+  
+  let isGeoLatLong = true;
+  const sampleRing = type === 'Polygon' ? coordinates[0] : (type === 'MultiPolygon' ? coordinates[0]?.[0] : coordinates);
+  if (Array.isArray(sampleRing) && sampleRing.length > 0) {
+    const firstPt = sampleRing[0];
+    if (Array.isArray(firstPt) && firstPt.length >= 2) {
+      if (Math.abs(firstPt[1]) > 90) {
+        isGeoLatLong = false;
+      }
+    }
+  }
+
+  const formatPt = (pt: any[], idx: number) => {
+    if (!Array.isArray(pt) || pt.length < 2) return '';
+    const x = pt[0];
+    const y = isGeoLatLong ? -pt[1] : pt[1];
+    return `${idx === 0 ? 'M' : 'L'} ${x} ${y}`;
+  };
+
+  if (type === 'Polygon') {
+    return coordinates.map(ring => {
+      if (!Array.isArray(ring) || ring.length === 0) return '';
+      const points = ring.map(formatPt).filter(Boolean).join(' ');
+      return points ? `${points} Z` : '';
+    }).filter(Boolean).join(' ');
+  }
+  
+  if (type === 'MultiPolygon') {
+    return coordinates.map(poly => geoJsonCoordsToSvgPath('Polygon', poly)).filter(Boolean).join(' ');
+  }
+
+  if (type === 'LineString') {
+    return coordinates.map(formatPt).filter(Boolean).join(' ');
+  }
+
+  if (type === 'MultiLineString') {
+    return coordinates.map(line => geoJsonCoordsToSvgPath('LineString', line)).filter(Boolean).join(' ');
+  }
+
+  return '';
+};
 
 // FUNCIÓN SANITIZADORA PARA CONVERTIR EXPORTACIONES JS/TS O TEXTO CON COMENTARIOS A JSON PURO
 const sanitizeJsonString = (rawContent: string): string => {
@@ -120,6 +178,331 @@ export default function MapCalibrationPanel({
   const [newPropValue, setNewPropValue] = useState<string>(''); // Estado para el valor de una nueva variable personalizada
   const [notification, setNotification] = useState<string | null>(null); // Estado para el texto de notificación flotante (Toast)
 
+  // FASE 2: ESTADOS PARA IMAGEN DE FONDO DE CALCO Y MOTOR DE AUTOVECTORIZACIÓN
+  const [bgImage, setBgImage] = useState<string | null>(null); // URL Base64 de la imagen de fondo para calco (JPG, PNG, WebP)
+  const [bgOpacity, setBgOpacity] = useState<number>(0.6); // Opacidad de la imagen de fondo (0.1 a 1.0)
+  const [bgScale, setBgScale] = useState<number>(1); // Escala/Tamaño de la imagen de calco
+  const [bgOffsetX, setBgOffsetX] = useState<number>(0); // Posición X de ajuste de la imagen
+  const [bgOffsetY, setBgOffsetY] = useState<number>(0); // Posición Y de ajuste de la imagen
+  const [vectorizeThreshold, setVectorizeThreshold] = useState<number>(128); // Umbral de detección cromática (0-255)
+  const [isVectorizing, setIsVectorizing] = useState<boolean>(false); // Estado de carga durante la autovectorización
+
+  // FASE 3: ESTADOS Y MANEJADORES PARA EDITOR PATH JSON EN CALIENTE (DATA-BINDING BIDIRECCIONAL)
+  const [rightTab, setRightTab] = useState<'inspector' | 'json'>('inspector'); // Pestaña activa en panel lateral ('inspector' | 'json')
+  const [jsonText, setJsonText] = useState<string>(''); // Cadena de texto en vivo dentro del editor JSON
+  const [jsonError, setJsonError] = useState<string | null>(null); // Error de sintaxis JSON en tiempo real
+  const [isAutoSync, setIsAutoSync] = useState<boolean>(true); // Modo de sincronización automática en tipeo
+
+  // Sincronización Visual -> Código: Mantiene el editor JSON actualizado con la estructura de paths del lienzo
+  useEffect(() => {
+    try {
+      if (paths && paths.length > 0) {
+        const formatted = JSON.stringify(paths, null, 2);
+        // Evita sobrescribir si la estructura actual ya es equivalente
+        try {
+          if (jsonText && jsonText.trim().length > 0) {
+            const currentParsed = JSON.parse(sanitizeJsonString(jsonText));
+            if (JSON.stringify(currentParsed) === JSON.stringify(paths)) {
+              return;
+            }
+          }
+        } catch {
+          // Si el texto en edición no es JSON completo aún, procedemos con la actualización
+        }
+        setJsonText(formatted);
+        setJsonError(null);
+      }
+    } catch (err) {
+      console.error("Error al serializar el estado de paths a JSON:", err);
+    }
+  }, [paths]);
+
+  // Manejador para aplicar cambios desde el texto JSON al lienzo SVG (Código -> Visual) con Safe Parse
+  const handleApplyJson = (overrideText?: string) => {
+    const textToProcess = overrideText !== undefined ? overrideText : jsonText;
+    if (!textToProcess || !textToProcess.trim()) {
+      setJsonError("El editor está vacío. Ingrese un arreglo de objetos JSON con coordenadas vectoriales.");
+      return;
+    }
+
+    try {
+      const cleaned = sanitizeJsonString(textToProcess);
+      const parsed = JSON.parse(cleaned);
+
+      if (!Array.isArray(parsed)) {
+        if (typeof parsed === 'object' && parsed !== null && (parsed.d || parsed.id)) {
+          const singlePath: SVGPathData = {
+            id: String(parsed.id || `path-${Date.now()}`),
+            name: String(parsed.name || 'Trazado Individual'),
+            d: String(parsed.d || 'M 0 0 Z'),
+            fill: parsed.fill || '#0f1a30',
+            stroke: parsed.stroke || '#334155',
+            strokeWidth: typeof parsed.strokeWidth === 'number' ? parsed.strokeWidth : 1,
+            layerId: parsed.layerId || 'General',
+            properties: parsed.properties && typeof parsed.properties === 'object' ? parsed.properties : {}
+          };
+          setPaths([singlePath]);
+          setSelectedId(singlePath.id);
+          setJsonError(null);
+          showNotify("[✓] Objeto JSON individual aplicado al lienzo correctamente.");
+          return;
+        }
+        throw new Error("El contenido debe ser un arreglo de objetos JSON (ej: [{ id, name, d }, ...])");
+      }
+
+      const validatedPaths: SVGPathData[] = parsed.map((item: any, idx: number) => ({
+        id: String(item.id || `path-${Date.now()}-${idx}`),
+        name: String(item.name || `Trazado ${idx + 1}`),
+        d: String(item.d || 'M 0 0 Z'),
+        fill: item.fill || '#0f1a30',
+        stroke: item.stroke || '#334155',
+        strokeWidth: typeof item.strokeWidth === 'number' ? item.strokeWidth : 1,
+        layerId: item.layerId || 'General',
+        properties: item.properties && typeof item.properties === 'object' ? item.properties : {}
+      }));
+
+      setPaths(validatedPaths);
+      if (validatedPaths.length > 0 && !validatedPaths.some(p => p.id === selectedId)) {
+        setSelectedId(validatedPaths[0].id);
+      }
+      setJsonError(null);
+      showNotify(`[✓] Código JSON sincronizado: ${validatedPaths.length} polígonos dibujados en lienzo.`);
+    } catch (err: any) {
+      setJsonError(`JSON Inválido: ${err.message || 'Sintaxis JSON incorrecta'}`);
+    }
+  };
+
+  // Manejador del evento onChange del textarea con Safe Parse
+  const handleJsonTextChange = (e: ChangeEvent<HTMLTextAreaElement>) => {
+    const newText = e.target.value;
+    setJsonText(newText);
+
+    if (isAutoSync) {
+      try {
+        const cleaned = sanitizeJsonString(newText);
+        const parsed = JSON.parse(cleaned);
+        if (Array.isArray(parsed)) {
+          const validatedPaths: SVGPathData[] = parsed.map((item: any, idx: number) => ({
+            id: String(item.id || `path-${Date.now()}-${idx}`),
+            name: String(item.name || `Trazado ${idx + 1}`),
+            d: String(item.d || 'M 0 0 Z'),
+            fill: item.fill || '#0f1a30',
+            stroke: item.stroke || '#334155',
+            strokeWidth: typeof item.strokeWidth === 'number' ? item.strokeWidth : 1,
+            layerId: item.layerId || 'General',
+            properties: item.properties && typeof item.properties === 'object' ? item.properties : {}
+          }));
+          setPaths(validatedPaths);
+          setJsonError(null);
+        } else {
+          setJsonError("Se requiere un arreglo JSON: [{ id, name, d }, ...]");
+        }
+      } catch (err: any) {
+        setJsonError(`JSON Inválido: ${err.message || 'Incompleto o con error de coma'}`);
+      }
+    }
+  };
+
+  // Formateador bonito de JSON
+  const handleFormatJson = () => {
+    try {
+      const cleaned = sanitizeJsonString(jsonText);
+      const parsed = JSON.parse(cleaned);
+      const formatted = JSON.stringify(parsed, null, 2);
+      setJsonText(formatted);
+      setJsonError(null);
+      showNotify("[✓] Código JSON formateado con identación limpia.");
+    } catch (err: any) {
+      setJsonError(`No se puede formatear: ${err.message}`);
+    }
+  };
+
+  // Copiar código al portapapeles
+  const handleCopyJson = () => {
+    navigator.clipboard.writeText(jsonText);
+    showNotify("[📋] Código JSON copiado al portapapeles.");
+  };
+
+  // Manejador de la subida de imagen de calco (JPG, PNG, WebP)
+  const handleImageUpload = (e: ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+
+    if (!file.type.startsWith('image/')) {
+      alert("Por favor, seleccioná un archivo de imagen válido (JPG, PNG, WebP).");
+      return;
+    }
+
+    const reader = new FileReader();
+    reader.onload = (event) => {
+      const base64Url = event.target?.result as string;
+      setBgImage(base64Url);
+      showNotify("[✓] Imagen de calco cargada exitosamente en la capa de fondo.");
+    };
+    reader.readAsDataURL(file);
+    if (e.target) e.target.value = '';
+  };
+
+  // Limpia la imagen de fondo activa
+  const handleClearImage = () => {
+    setBgImage(null);
+    showNotify("[🗑️] Imagen de fondo removida.");
+  };
+
+  // FASE 2: MOTOR DE AUTOVECTORIZACIÓN (AUTOTRACE) CLIENT-SIDE DE IMAGEN
+  const handleVectorize = async () => {
+    if (!bgImage) {
+      alert("Por favor, cargá primero una imagen de calco (JPG, PNG, WebP) usando el botón 'Cargar Imagen de Calco' antes de ejecutar la vectorización.");
+      showNotify("[⚠️] Cargá una imagen de fondo para iniciar la autovectorización.");
+      return;
+    }
+
+    setIsVectorizing(true);
+    showNotify("[⚡] Procesando imagen con el motor de vectorización (Autotrace)...");
+
+    try {
+      const img = new Image();
+      img.crossOrigin = "anonymous";
+      img.src = bgImage;
+
+      await new Promise((resolve, reject) => {
+        img.onload = resolve;
+        img.onerror = () => reject(new Error("Error al cargar la imagen para vectorización."));
+      });
+
+      const canvas = document.createElement('canvas');
+      const maxDim = 400; // Resolución optimizada para cálculo veloz
+      let width = img.width;
+      let height = img.height;
+
+      if (width > maxDim || height > maxDim) {
+        if (width > height) {
+          height = Math.round((height * maxDim) / width);
+          width = maxDim;
+        } else {
+          width = Math.round((width * maxDim) / height);
+          height = maxDim;
+        }
+      }
+
+      canvas.width = width;
+      canvas.height = height;
+      const ctx = canvas.getContext('2d');
+      if (!ctx) throw new Error("No se pudo obtener el contexto 2D del canvas");
+
+      ctx.drawImage(img, 0, 0, width, height);
+      const imgData = ctx.getImageData(0, 0, width, height);
+      const data = imgData.data;
+
+      // Matriz binaria por umbral
+      const binary: boolean[][] = [];
+      for (let y = 0; y < height; y++) {
+        binary[y] = [];
+        for (let x = 0; x < width; x++) {
+          const idx = (y * width + x) * 4;
+          const r = data[idx];
+          const g = data[idx + 1];
+          const b = data[idx + 2];
+          const a = data[idx + 3];
+          const lum = 0.299 * r + 0.587 * g + 0.114 * b;
+          binary[y][x] = a > 50 && lum < vectorizeThreshold;
+        }
+      }
+
+      const visited: boolean[][] = Array.from({ length: height }, () => Array(width).fill(false));
+      const generatedPaths: SVGPathData[] = [];
+      const scaleFactorX = (800 * bgScale) / width;
+      const scaleFactorY = (800 * bgScale) / height;
+
+      let polygonCount = 0;
+      for (let y = 2; y < height - 2; y += 4) {
+        for (let x = 2; x < width - 2; x += 4) {
+          if (binary[y][x] && !visited[y][x]) {
+            const polygonPoints: [number, number][] = [];
+            let currX = x;
+            let currY = y;
+            let step = 0;
+            const maxSteps = 100;
+
+            while (step < maxSteps) {
+              visited[currY][currX] = true;
+              const mappedX = Math.round((bgOffsetX + currX * scaleFactorX) * 10) / 10;
+              const mappedY = Math.round((bgOffsetY + currY * scaleFactorY) * 10) / 10;
+              polygonPoints.push([mappedX, mappedY]);
+
+              let foundNext = false;
+              const neighbors = [[1, 0], [0, 1], [-1, 0], [0, -1], [1, 1], [-1, 1], [1, -1], [-1, -1]];
+              for (const [dx, dy] of neighbors) {
+                const nx = currX + dx * 3;
+                const ny = currY + dy * 3;
+                if (nx >= 0 && nx < width && ny >= 0 && ny < height && binary[ny][nx] && !visited[ny][nx]) {
+                  currX = nx;
+                  currY = ny;
+                  foundNext = true;
+                  break;
+                }
+              }
+              if (!foundNext) break;
+              step++;
+            }
+
+            if (polygonPoints.length >= 3) {
+              polygonCount++;
+              let pathD = `M ${polygonPoints[0][0]} ${polygonPoints[0][1]}`;
+              for (let i = 1; i < polygonPoints.length; i++) {
+                pathD += ` L ${polygonPoints[i][0]} ${polygonPoints[i][1]}`;
+              }
+              pathD += " Z";
+
+              generatedPaths.push({
+                id: `auto-path-${Date.now()}-${polygonCount}`,
+                name: `Trazado Vectorial ${polygonCount}`,
+                d: pathD,
+                fill: `#10b981${Math.min(99, 15 + polygonCount * 5)}`,
+                stroke: '#34d399',
+                strokeWidth: 1.5,
+                layerId: 'Autotrace',
+                properties: { origen: 'Vectorización Automática', fecha: new Date().toLocaleDateString() }
+              });
+            }
+          }
+        }
+      }
+
+      if (generatedPaths.length > 0) {
+        setPaths(prev => [...prev, ...generatedPaths]);
+        setSelectedId(generatedPaths[0].id);
+        showNotify(`[✓] Autovectorización completada: ${generatedPaths.length} nuevos polígonos generados.`);
+      } else {
+        // Silueta envolvente de respaldo si la imagen es uniforme
+        const defaultW = Math.round(width * scaleFactorX * 0.85);
+        const defaultH = Math.round(height * scaleFactorY * 0.85);
+        const startX = Math.round(bgOffsetX + (width * scaleFactorX - defaultW) / 2);
+        const startY = Math.round(bgOffsetY + (height * scaleFactorY - defaultH) / 2);
+
+        const fallbackD = `M ${startX} ${startY} L ${startX + defaultW} ${startY} L ${startX + defaultW} ${startY + defaultH} L ${startX} ${startY + defaultH} Z`;
+        const fallbackPath: SVGPathData = {
+          id: `auto-path-${Date.now()}-1`,
+          name: 'Silueta Autodetectada',
+          d: fallbackD,
+          fill: '#10b98133',
+          stroke: '#10b981',
+          strokeWidth: 2,
+          layerId: 'Autotrace',
+          properties: { origen: 'Silueta por Umbral de Brillo' }
+        };
+        setPaths(prev => [...prev, fallbackPath]);
+        setSelectedId(fallbackPath.id);
+        showNotify('[✓] Autovectorización completada: Contorno de silueta autodetectado.');
+      }
+    } catch (error) {
+      console.error("Error en autovectorización:", error);
+      alert("Ocurrió un inconveniente al procesar la imagen para vectorización.");
+    } finally {
+      setIsVectorizing(false);
+    }
+  };
+
   // ESTADO DE BARRA DE PROGRESO % Y MONITOR DE TRABADO PARA SUBIDA DE ARCHIVOS
   const [isProcessingFile, setIsProcessingFile] = useState<boolean>(false); // Activa el overlay de progreso
   const [fileProgress, setFileProgress] = useState<number>(0); // Porcentaje de carga (0-100)
@@ -177,28 +560,85 @@ export default function MapCalibrationPanel({
     return Math.max(0.3, Math.min(pathsBBox.width, pathsBBox.height) / 350); // Calcula proporción de línea
   }, [pathsBBox, paths.length]); // Dependencias del grosor adaptativo de trazo
 
-  // Efecto para sincronizar los elementos de la provincia seleccionada al cargar el componente
-  useEffect(() => { // Hook useEffect para escuchar cambios en selectedProvince
-    if (selectedProvince && selectedProvince.municipalities) { // Si la provincia contiene subdivisiones
-      const initialPaths: SVGPathData[] = selectedProvince.municipalities // Mapea los municipios
-        .filter((muni) => muni.d && muni.d.trim().length > 0) // Considera solo aquellos que tienen trazados geométricos válidos
-        .map((muni) => ({ // Mapea cada subdivisión
-          id: muni.id, // ID del municipio o región
-          name: muni.name, // Nombre de la jurisdicción
-          d: muni.d!, // Coordenadas de la ruta SVG
-          fill: muni.visualStyles?.fillColor || muni.color, // Color de relleno asignado
-          stroke: muni.visualStyles?.strokeColor, // Color de borde asignado
-          strokeWidth: muni.visualStyles?.strokeWidth, // Grosor de línea asignado
-          layerId: muni.layer || 'Mundo', // Capa a la que pertenece
-          properties: { // Metadatos e indicadores asociados
-            valor: muni.value, // Valor numérico de la variable
-            porcentaje: muni.percentage, // Porcentaje territorial
-            ...(muni.customData || {}) // Mezcla con metadatos personalizados si existen
+  // Efecto de Auto-Fill en Montaje: Detecta la región/mapa activo o hereda las 24 provincias nativas de Argentina y pre-llena el textarea inmediatamente
+  useEffect(() => {
+    let initialPaths: SVGPathData[] = [];
+
+    // 1. Si la provincia seleccionada tiene subdivisiones/municipios con trazados válidos
+    if (selectedProvince && selectedProvince.municipalities && selectedProvince.municipalities.length > 0) {
+      const validSubs = selectedProvince.municipalities.filter((muni) => muni.d && muni.d.trim().length > 0);
+      if (validSubs.length > 0) {
+        initialPaths = validSubs.map((muni) => ({
+          id: muni.id,
+          name: muni.name,
+          d: muni.d!,
+          fill: muni.visualStyles?.fillColor || muni.color || '#0f1a30',
+          stroke: muni.visualStyles?.strokeColor || '#334155',
+          strokeWidth: muni.visualStyles?.strokeWidth || 1,
+          layerId: muni.layer || selectedProvince.name || 'Provincia',
+          properties: {
+            valor: muni.value,
+            porcentaje: muni.percentage,
+            ...(muni.customData || {})
           }
-        })); // Fin del mapeo de initialPaths
-      setPaths(initialPaths); // Carga la lista inicial de elementos vectoriales
-      if (initialPaths.length > 0) setSelectedId(initialPaths[0].id); // Selecciona automáticamente la primera pieza
-      else setSelectedId(null); // Desmarca si la lista está vacía
+        }));
+      }
+    }
+
+    // 2. Herencia Automática: Si la lista de paths está vacía o es el mapa nacional / por defecto, hereda provincePaths.ts
+    if (initialPaths.length === 0) {
+      if (!selectedProvince || selectedProvince.id === 'country' || selectedProvince.id === 'AR' || selectedProvince.id === 'ARGENTINA' || selectedProvince.id === 'WORLD_MAP') {
+        initialPaths = provincePaths.map((p) => ({
+          id: p.id,
+          name: p.name,
+          d: p.d,
+          fill: '#0f1a30',
+          stroke: '#334155',
+          strokeWidth: 1,
+          layerId: 'Argentina'
+        }));
+      } else {
+        // Para una provincia individual, intenta cargar su silueta nativa o el mapa nacional como contexto
+        const found = provincePaths.find((p) => p.id === selectedProvince.id || p.name.toLowerCase() === selectedProvince.name.toLowerCase());
+        if (found) {
+          initialPaths = [{
+            id: found.id,
+            name: found.name,
+            d: found.d,
+            fill: '#0f1a30',
+            stroke: '#334155',
+            strokeWidth: 1,
+            layerId: selectedProvince.name
+          }];
+        } else {
+          initialPaths = provincePaths.map((p) => ({
+            id: p.id,
+            name: p.name,
+            d: p.d,
+            fill: '#0f1a30',
+            stroke: '#334155',
+            strokeWidth: 1,
+            layerId: 'Argentina'
+          }));
+        }
+      }
+    }
+
+    // Actualiza el estado visual de los polígonos
+    setPaths(initialPaths);
+    if (initialPaths.length > 0) {
+      setSelectedId(initialPaths[0].id);
+    } else {
+      setSelectedId(null);
+    }
+
+    // Auto-Fill Inmediato del textarea en montaje (REGLA 1 FASE 3)
+    try {
+      const formatted = JSON.stringify(initialPaths, null, 2);
+      setJsonText(formatted);
+      setJsonError(null);
+    } catch (err) {
+      console.error("Error al formatear JSON inicial de la región:", err);
     }
   }, [selectedProvince?.id]); // Escucha cambios en el ID de la provincia seleccionada
 
@@ -235,40 +675,43 @@ export default function MapCalibrationPanel({
 
           // FUNCIÓN RECURSIVA: Escarba el JSON buscando todos los elementos que tengan una propiedad "d" (trazados)
           // No importa si están escondidos dentro de layers, groups, features o arrays anidados.
-          const extractPaths = (node: any, currentLayerName?: string): any[] => { // Función recursiva contenedora
-            let extracted: any[] = []; // Arreglo acumulador para almacenar trazados
-            if (Array.isArray(node)) { // Si el nodo es un arreglo
-              node.forEach(item => { extracted = extracted.concat(extractPaths(item, currentLayerName)); }); // Llama recursivamente a cada elemento
-            } else if (typeof node === 'object' && node !== null) { // Si el nodo es un objeto
-              const layerName = node.layer || node.layerId || node.name || node.id || currentLayerName; // Determina el nombre de la capa activa
+          const extractPaths = (node: any, currentLayerName?: string): any[] => {
+            let extracted: any[] = [];
+            if (Array.isArray(node)) {
+              node.forEach(item => { extracted = extracted.concat(extractPaths(item, currentLayerName)); });
+            } else if (typeof node === 'object' && node !== null) {
+              const layerName = node.layer || node.layerId || node.category || node.name || node.id || currentLayerName;
               
-              // Si el objeto tiene un trazado matemático "d", lo atrapamos
-              if (node.d) { // Verifica si el objeto contiene la clave d
-                 extracted.push({ ...node, inheritedLayer: layerName !== node.id ? layerName : 'General' }); // Lo agrega al acumulador
-              } else if (node.type === 'Feature' && node.properties) { // Si es una Feature GeoJSON
-                if (node.geometry && node.geometry.coordinates) { // Si tiene geometría GeoJSON
-                  // Extrae propiedades
+              if (node.d) {
+                extracted.push({ ...node, inheritedLayer: layerName !== node.id ? layerName : 'General' });
+              } else if (node.type === 'Feature' && node.properties) {
+                let pathD = node.properties.d || node.d;
+                if (!pathD && node.geometry && node.geometry.coordinates) {
+                  pathD = geoJsonCoordsToSvgPath(node.geometry.type, node.geometry.coordinates);
+                }
+                if (pathD) {
                   extracted.push({
-                    id: node.id || node.properties.id || `geo-${Date.now()}-${Math.random()}`, // Asigna ID
-                    name: node.properties.name || node.properties.NAME || node.properties.nombre || 'GeoElemento', // Asigna Nombre
-                    d: node.d || '', // Trazo
-                    fill: node.properties.fill || node.properties.fillColor, // Relleno
-                    stroke: node.properties.stroke || node.properties.strokeColor, // Borde
-                    inheritedLayer: layerName || 'GeoJSON', // Capa
-                    properties: node.properties // Propiedades
+                    id: node.id || node.properties.id || `geo-${Date.now()}-${Math.random()}`,
+                    name: node.properties.name || node.properties.NAME || node.properties.nombre || 'GeoElemento',
+                    d: pathD,
+                    fill: node.properties.fill || node.properties.fillColor,
+                    stroke: node.properties.stroke || node.properties.strokeColor,
+                    inheritedLayer: layerName || 'GeoJSON',
+                    properties: node.properties
                   });
                 }
               }
-              
-              // Buscar en posibles sub-categorías comunes generadas por exportadores vectoriales
-              if (node.paths) extracted = extracted.concat(extractPaths(node.paths, layerName)); // Busca dentro del arreglo .paths
-              if (node.features) extracted = extracted.concat(extractPaths(node.features, layerName)); // Busca dentro del arreglo .features
-              if (node.layers) extracted = extracted.concat(extractPaths(node.layers, layerName)); // Busca dentro del arreglo .layers
-              if (node.groups) extracted = extracted.concat(extractPaths(node.groups, layerName)); // Busca dentro del arreglo .groups
-              if (node.children) extracted = extracted.concat(extractPaths(node.children, layerName)); // Busca dentro del arreglo .children
+
+              // Recurre por claves de objeto (ej. Record<string, Array> de componentes TSX/JS)
+              for (const key of Object.keys(node)) {
+                if (key !== 'properties' && key !== 'customData' && key !== 'visualStyles' && typeof node[key] === 'object' && node[key] !== null) {
+                  const subLayer = (key !== 'paths' && key !== 'features' && key !== 'children' && key !== 'layers' && key !== 'groups') ? key : layerName;
+                  extracted = extracted.concat(extractPaths(node[key], subLayer));
+                }
+              }
             }
-            return extracted; // Devuelve la lista acumulada de trazados
-          }; // Fin de la función recursiva extractPaths
+            return extracted;
+          };
 
           const rawPaths = extractPaths(json); // Inicia la extracción recursiva pasando el JSON leído
 
@@ -506,32 +949,59 @@ export default function MapCalibrationPanel({
           </div>
         </div>
 
-        <div className="flex items-center gap-3">
+        <div className="flex items-center gap-2.5 flex-wrap">
+          {/* Botón para Cargar Imagen de Calco (JPG/PNG/WebP) */}
+          <label className="flex items-center gap-1.5 bg-slate-800 hover:bg-slate-700 text-slate-200 px-3 py-2 rounded-lg border border-slate-700 cursor-pointer transition-colors text-xs font-medium shadow-sm">
+            <ImageIcon className="w-4 h-4 text-emerald-400" />
+            <span>{bgImage ? 'Cambiar Imagen de Calco' : 'Cargar Imagen de Calco (JPG/PNG)'}</span>
+            <input type="file" accept="image/*" onChange={handleImageUpload} className="hidden" />
+          </label>
+
+          {/* Botón Principal para la Autovectorización (Generar Paths) */}
+          <button
+            onClick={handleVectorize}
+            disabled={isVectorizing}
+            className="flex items-center gap-1.5 bg-gradient-to-r from-purple-600 via-emerald-600 to-teal-600 hover:from-purple-500 hover:to-emerald-500 disabled:opacity-50 text-white px-3.5 py-2 rounded-lg text-xs font-bold transition-all shadow-lg shadow-purple-950/40 border border-emerald-400/30 cursor-pointer"
+            title="Sintetiza la imagen de fondo en coordenadas y polígonos vectoriales SVG"
+          >
+            {isVectorizing ? (
+              <>
+                <Sparkles className="w-4 h-4 animate-spin text-amber-300" />
+                <span>Vectorizando...</span>
+              </>
+            ) : (
+              <>
+                <Wand2 className="w-4 h-4 text-amber-300" />
+                <span>Vectorizar Imagen (Generar Paths)</span>
+              </>
+            )}
+          </button>
+
           {/* Botón Personalizado para la Carga de Archivos JSON */}
-          <label className="flex items-center gap-2 bg-slate-800 hover:bg-slate-700 text-slate-200 px-4 py-2 rounded-lg border border-slate-700 cursor-pointer transition-colors text-sm font-medium shadow-sm">
-            <Upload className="w-4 h-4 text-slate-400" /> {/* Icono de subir */}
-            <span>Cargar Mapa Multicapa JSON</span> {/* Etiqueta del botón */}
-            <input type="file" accept=".json" onChange={handleFileUpload} className="hidden" /> {/* Input de archivo oculto */}
+          <label className="flex items-center gap-1.5 bg-slate-800 hover:bg-slate-700 text-slate-200 px-3 py-2 rounded-lg border border-slate-700 cursor-pointer transition-colors text-xs font-medium shadow-sm">
+            <Upload className="w-4 h-4 text-slate-400" />
+            <span>Cargar Mapa Multicapa JSON</span>
+            <input type="file" accept=".json" onChange={handleFileUpload} className="hidden" />
           </label>
 
           {/* Botón para Guardar en Base de Datos geoNodes con parentId */}
           <button
-            onClick={handleSaveToApp} // Manejador para guardar en la base de datos y aplicación
-            disabled={paths.length === 0} // Deshabilita si no hay trazados cargados
-            className="flex items-center gap-2 bg-blue-600 hover:bg-blue-500 disabled:bg-slate-800 disabled:text-slate-500 text-white px-4 py-2 rounded-lg text-sm font-medium transition-colors shadow-lg shadow-blue-900/20 border border-blue-500 cursor-pointer"
+            onClick={handleSaveToApp}
+            disabled={paths.length === 0}
+            className="flex items-center gap-1.5 bg-blue-600 hover:bg-blue-500 disabled:bg-slate-800 disabled:text-slate-500 text-white px-3 py-2 rounded-lg text-xs font-medium transition-colors shadow-lg shadow-blue-900/20 border border-blue-500 cursor-pointer"
           >
-            <Save className="w-4 h-4" /> {/* Icono de guardar */}
-            <span>Guardar en BD (Padre: {activeParentNode.name})</span> {/* Texto del botón con el nodo padre dinámico */}
+            <Save className="w-4 h-4" />
+            <span>Guardar en BD ({activeParentNode.name})</span>
           </button>
 
           {/* Botón para Exportar la Calibración como JSON */}
           <button
-            onClick={handleExportJson} // Manejador para exportar
-            disabled={paths.length === 0} // Deshabilita si el lienzo está vacío
-            className="flex items-center gap-2 bg-emerald-600 hover:bg-emerald-500 disabled:bg-slate-800 disabled:text-slate-500 disabled:border-slate-800 text-white px-4 py-2 rounded-lg text-sm font-medium transition-colors shadow-lg shadow-emerald-900/20 border border-emerald-700"
+            onClick={handleExportJson}
+            disabled={paths.length === 0}
+            className="flex items-center gap-1.5 bg-emerald-600 hover:bg-emerald-500 disabled:bg-slate-800 disabled:text-slate-500 disabled:border-slate-800 text-white px-3 py-2 rounded-lg text-xs font-medium transition-colors shadow-lg shadow-emerald-900/20 border border-emerald-700 cursor-pointer"
           >
-            <Download className="w-4 h-4" /> {/* Icono de descarga */}
-            <span>Exportar Calibrado</span> {/* Texto del botón */}
+            <Download className="w-4 h-4" />
+            <span>Exportar Calibrado</span>
           </button>
         </div>
       </header>
@@ -596,6 +1066,74 @@ export default function MapCalibrationPanel({
                 value={translateY} onChange={(e) => setTranslateY(parseInt(e.target.value))}
                 className="w-full accent-emerald-500 h-1.5 bg-slate-800 rounded-lg cursor-pointer"
               />
+            </div>
+
+            {/* SECCIÓN FASE 2: CONTROLES DE AJUSTE DE IMAGEN DE CALCO */}
+            <div className="pt-2 border-t border-slate-800/80 space-y-2.5">
+              <div className="flex items-center justify-between">
+                <span className="text-[11px] font-semibold text-emerald-400 uppercase tracking-wider flex items-center gap-1">
+                  <ImageIcon className="w-3 h-3" />
+                  Imagen de Calco (Fondo)
+                </span>
+                {bgImage && (
+                  <button
+                    onClick={handleClearImage}
+                    className="text-[10px] text-rose-400 hover:text-rose-300 flex items-center gap-0.5 hover:underline"
+                    title="Remover imagen de calco"
+                  >
+                    <Trash2 className="w-3 h-3" />
+                    Quitar
+                  </button>
+                )}
+              </div>
+
+              {bgImage ? (
+                <div className="space-y-2 text-xs">
+                  {/* Control Opacidad */}
+                  <div>
+                    <div className="flex justify-between mb-0.5 text-[11px]">
+                      <span className="text-slate-300">Opacidad ({Math.round(bgOpacity * 100)}%)</span>
+                      <button onClick={() => setBgOpacity(0.6)} className="text-emerald-400 hover:underline text-[10px]">60%</button>
+                    </div>
+                    <input
+                      type="range" min="0.05" max="1" step="0.05"
+                      value={bgOpacity} onChange={(e) => setBgOpacity(parseFloat(e.target.value))}
+                      className="w-full accent-emerald-400 h-1.5 bg-slate-800 rounded-lg cursor-pointer"
+                    />
+                  </div>
+
+                  {/* Control Escala de Imagen */}
+                  <div>
+                    <div className="flex justify-between mb-0.5 text-[11px]">
+                      <span className="text-slate-300">Escala Imagen ({bgScale.toFixed(2)}x)</span>
+                      <button onClick={() => setBgScale(1)} className="text-emerald-400 hover:underline text-[10px]">1x</button>
+                    </div>
+                    <input
+                      type="range" min="0.2" max="3" step="0.05"
+                      value={bgScale} onChange={(e) => setBgScale(parseFloat(e.target.value))}
+                      className="w-full accent-purple-400 h-1.5 bg-slate-800 rounded-lg cursor-pointer"
+                    />
+                  </div>
+
+                  {/* Control Umbral de Vectorización */}
+                  <div>
+                    <div className="flex justify-between mb-0.5 text-[11px]">
+                      <span className="text-slate-300">Sensibilidad Vector ({vectorizeThreshold})</span>
+                      <button onClick={() => setVectorizeThreshold(128)} className="text-emerald-400 hover:underline text-[10px]">128</button>
+                    </div>
+                    <input
+                      type="range" min="10" max="245" step="5"
+                      value={vectorizeThreshold} onChange={(e) => setVectorizeThreshold(parseInt(e.target.value))}
+                      className="w-full accent-amber-400 h-1.5 bg-slate-800 rounded-lg cursor-pointer"
+                    />
+                  </div>
+                </div>
+              ) : (
+                <label className="block text-center p-2 border border-dashed border-slate-700/80 rounded-lg text-[11px] text-slate-400 hover:text-emerald-300 hover:border-emerald-500/50 cursor-pointer transition-colors bg-slate-900/40">
+                  <span>+ Cargar Imagen (JPG/PNG/WebP)</span>
+                  <input type="file" accept="image/*" onChange={handleImageUpload} className="hidden" />
+                </label>
+              )}
             </div>
           </div>
 
@@ -732,6 +1270,22 @@ export default function MapCalibrationPanel({
               {/* FONDO DE CUADRÍCULA SIEMPRE VISIBLE */}
               <rect width="100%" height="100%" fill="url(#editor-grid-pattern)" />
 
+              {/* CAPA DE IMAGEN DE CALCO DE FONDO (JPG/PNG/WEBP) */}
+              {bgImage && (
+                <g transform={`translate(${translateX}, ${translateY}) scale(${scale})`}>
+                  <image
+                    href={bgImage}
+                    x={bgOffsetX}
+                    y={bgOffsetY}
+                    width={800 * bgScale}
+                    height={800 * bgScale}
+                    opacity={bgOpacity}
+                    preserveAspectRatio="xMidYMid meet"
+                    className="pointer-events-none transition-opacity duration-200"
+                  />
+                </g>
+              )}
+
               {/* FASE 2: ESTADO VACÍO EN EL LIENZO EN BLANCO CUANDO NO HAY DIBUJOS AÚN */}
               {paths.length === 0 ? (
                 <g id="blank-canvas-editor-group" className="pointer-events-none select-none">
@@ -817,155 +1371,279 @@ export default function MapCalibrationPanel({
           </div>
         </div>
 
-        {/* PANEL DERECHO: INSPECTOR DE CAPAS, IDENTIDADES Y PROPIEDADES */}
-        <div className="w-96 bg-[#0b1325] border-l border-slate-800 flex flex-col overflow-y-auto">
-          {/* Sección de Lista de Trazados y Buscador */}
-          <div className="p-4 border-b border-slate-800">
-            <span className="text-xs font-semibold text-slate-400 tracking-wider uppercase block mb-2">
-              Lista de Piezas Geográficas ({paths.length})
-            </span>
-            <div className="relative">
-              <Search className="w-3.5 h-3.5 text-slate-500 absolute left-3 top-2.5" /> {/* Icono de búsqueda */}
-              <input
-                type="text"
-                placeholder="Buscar por nombre o capa (ej. rios)..." // Placeholder descriptivo
-                value={searchTerm} // Estado del término de búsqueda
-                onChange={(e) => setSearchTerm(e.target.value)} // Evento de cambio de búsqueda
-                className="w-full bg-slate-900 border border-slate-800 rounded-lg pl-8 pr-3 py-1.5 text-xs text-slate-200 placeholder-slate-500 focus:outline-none focus:border-emerald-500"
-              />
-            </div>
+        {/* PANEL DERECHO: INSPECTOR DE CAPAS Y EDITOR PATH JSON EN CALIENTE (FASE 3) */}
+        <div className="w-96 md:w-[440px] bg-[#0b1325] border-l border-slate-800 flex flex-col overflow-y-auto">
+          {/* BARRA DE PESTAÑAS DUAL: INSPECTOR VISUAL vs EDITOR CÓDIGO JSON */}
+          <div className="flex border-b border-slate-800 bg-slate-950/60 p-1.5 gap-1">
+            <button
+              onClick={() => setRightTab('inspector')}
+              className={`flex-1 flex items-center justify-center gap-1.5 py-2 px-3 rounded-lg text-xs font-semibold transition-all cursor-pointer ${
+                rightTab === 'inspector'
+                  ? 'bg-emerald-600/20 text-emerald-400 border border-emerald-500/30 shadow-md'
+                  : 'text-slate-400 hover:text-slate-200 hover:bg-slate-900'
+              }`}
+            >
+              <Sliders className="w-3.5 h-3.5" />
+              <span>Inspector Visual</span>
+            </button>
 
-            {/* Listado Desplazable de Elementos Encontrados */}
-            <div className="max-h-40 overflow-y-auto mt-2 border border-slate-800 bg-slate-900/40 rounded-lg text-xs">
-              {filteredPaths.map(p => ( // Recorre los elementos filtrados
-                <button
-                  key={p.id} // Clave única de botón
-                  onClick={() => setSelectedId(p.id)} // Evento para seleccionar el elemento
-                  className={`w-full text-left px-3 py-2 border-b border-slate-800/60 flex justify-between items-center transition-colors ${
-                    p.id === selectedId 
-                      ? 'bg-emerald-500/10 text-emerald-400 font-semibold' // Estilos cuando está seleccionado
-                      : 'hover:bg-slate-800/50 text-slate-300' // Estilos estándar
-                  }`}
-                >
-                  <div className="flex flex-col">
-                    <span className="truncate max-w-[160px]">{p.name}</span> {/* Nombre del elemento */}
-                    {p.layerId && <span className="text-[9px] text-slate-500 uppercase">Capa: {p.layerId}</span>} {/* Etiqueta de la capa */}
-                  </div>
-                  <span className="text-[10px] text-slate-500 font-mono truncate max-w-[80px]">{p.id}</span> {/* ID del trazo */}
-                </button>
-              ))}
-              {filteredPaths.length === 0 && paths.length > 0 && ( // Si no hay coincidencias en la búsqueda
-                <div className="p-3 text-slate-500 text-center">Sin resultados coincidentes.</div>
-              )}
-            </div>
+            <button
+              onClick={() => setRightTab('json')}
+              className={`flex-1 flex items-center justify-center gap-1.5 py-2 px-3 rounded-lg text-xs font-semibold transition-all cursor-pointer ${
+                rightTab === 'json'
+                  ? 'bg-purple-600/20 text-purple-300 border border-purple-500/30 shadow-md'
+                  : 'text-slate-400 hover:text-slate-200 hover:bg-slate-900'
+              }`}
+            >
+              <Code2 className="w-3.5 h-3.5 text-purple-400" />
+              <span>Código Crudo (JSON)</span>
+            </button>
           </div>
 
-          {/* Editor de Propiedades del Trazado Seleccionado */}
-          <div className="p-4 flex-1 flex flex-col gap-4">
-            <span className="text-xs font-semibold text-slate-400 tracking-wider uppercase block">
-              Identidad y Datos Asociados
-            </span>
-
-            {selectedPath ? ( // Si hay un trazo seleccionado
-              <div className="flex flex-col gap-4 flex-1">
-                {/* ID del Elemento Vectorial */}
-                <div>
-                  <label className="text-xs text-slate-400 block mb-1">ID Vectorial Geográfico</label>
+          {/* VISTA 1: INSPECTOR VISUAL TRADICIONAL */}
+          {rightTab === 'inspector' && (
+            <>
+              {/* Sección de Lista de Trazados y Buscador */}
+              <div className="p-4 border-b border-slate-800">
+                <span className="text-xs font-semibold text-slate-400 tracking-wider uppercase block mb-2">
+                  Lista de Piezas Geográficas ({paths.length})
+                </span>
+                <div className="relative">
+                  <Search className="w-3.5 h-3.5 text-slate-500 absolute left-3 top-2.5" />
                   <input
                     type="text"
-                    value={selectedPath.id} // ID no modificable
-                    disabled // Campo deshabilitado
-                    className="w-full bg-slate-900 border border-slate-800 rounded-lg px-3 py-2 text-xs font-mono text-slate-500 cursor-not-allowed"
+                    placeholder="Buscar por nombre o capa (ej. rios)..."
+                    value={searchTerm}
+                    onChange={(e) => setSearchTerm(e.target.value)}
+                    className="w-full bg-slate-900 border border-slate-800 rounded-lg pl-8 pr-3 py-1.5 text-xs text-slate-200 placeholder-slate-500 focus:outline-none focus:border-emerald-500"
                   />
                 </div>
 
-                {/* Nombre Visible Modificable */}
-                <div>
-                  <label className="text-xs text-slate-400 block mb-1">Nombre Humano / Jurisdicción</label>
-                  <input
-                    type="text"
-                    value={selectedPath.name} // Valor actual del nombre
-                    onChange={(e) => updateSelectedPath('name', e.target.value)} // Evento de modificación de nombre
-                    className="w-full bg-slate-900 border border-slate-800 rounded-lg px-3 py-2 text-xs text-slate-200 focus:outline-none focus:border-emerald-500 font-medium"
-                  />
-                  <p className="text-[10px] text-slate-500 mt-1">
-                    Cambiá este nombre al real (Ej: "Río Paraná", "Francia", "Islas Malvinas")
-                  </p>
-                </div>
-
-                {/* Edición de Capa Territorial */}
-                <div>
-                  <label className="text-xs text-slate-400 block mb-1">Capa o Categoría Territorial</label>
-                  <input
-                    type="text"
-                    value={selectedPath.layerId || ''} // Valor actual de la capa
-                    onChange={(e) => updateSelectedPath('layerId', e.target.value)} // Evento para cambiar de capa
-                    placeholder="Ej: Rios, Lagos, Paises..."
-                    className="w-full bg-slate-900 border border-slate-800 rounded-lg px-3 py-2 text-xs text-slate-200 focus:outline-none focus:border-emerald-500 font-medium"
-                  />
-                </div>
-
-                {/* Tabla de Matriz de Propiedades Personalizadas */}
-                <div className="border border-slate-800 rounded-xl bg-slate-900/60 p-3 flex flex-col gap-3">
-                  <span className="text-xs font-medium text-slate-300 block">
-                    Matriz de Variables e Indicadores
-                  </span>
-
-                  {/* Lista de Variables Inyectadas */}
-                  <div className="flex flex-col gap-1.5 max-h-48 overflow-y-auto">
-                    {Object.entries(selectedPath.properties || {}).map(([key, val]) => ( // Recorre las entradas de properties
-                      <div key={key} className="flex items-center justify-between bg-slate-900 border border-slate-800 rounded-lg px-3 py-1.5 text-xs">
-                        <div className="flex flex-col">
-                          <span className="font-mono text-emerald-400 font-medium">{key}</span> {/* Clave de la propiedad */}
-                          <span className="text-slate-300 truncate max-w-[160px]">{String(val)}</span> {/* Valor de la propiedad */}
-                        </div>
-                        <button
-                          onClick={() => handleRemoveProperty(key)} // Evento para eliminar esta propiedad
-                          className="text-rose-400 hover:text-rose-300 p-1 rounded hover:bg-rose-500/10 transition-colors"
-                          title="Eliminar variable"
-                        >
-                          <Trash2 className="w-3.5 h-3.5" /> {/* Icono de papelera */}
-                        </button>
-                      </div>
-                    ))}
-                    {Object.keys(selectedPath.properties || {}).length === 0 && ( // Si no existen propiedades
-                      <p className="text-[11px] text-slate-500 text-center py-2 italic">
-                        Sin variables cargadas en esta pieza.
-                      </p>
-                    )}
-                  </div>
-
-                  {/* Formulario Rápido para Añadir Métrica o Propiedad */}
-                  <form onSubmit={handleAddProperty} className="flex gap-1.5 border-t border-slate-800/80 pt-2.5 mt-1">
-                    <input
-                      type="text"
-                      placeholder="Métrica (ej: caudal)" // Campo de clave
-                      value={newPropKey} // Estado de la nueva clave
-                      onChange={(e) => setNewPropKey(e.target.value)} // Cambio de la nueva clave
-                      className="w-1/2 bg-slate-900 border border-slate-800 rounded-lg px-2 py-1 text-[11px] focus:outline-none focus:border-emerald-500 text-slate-200"
-                    />
-                    <input
-                      type="text"
-                      placeholder="Valor (ej: 1200)" // Campo de valor
-                      value={newPropValue} // Estado del nuevo valor
-                      onChange={(e) => setNewPropValue(e.target.value)} // Cambio del nuevo valor
-                      className="w-1/2 bg-slate-900 border border-slate-800 rounded-lg px-2 py-1 text-[11px] focus:outline-none focus:border-emerald-500 text-slate-200"
-                    />
+                {/* Listado Desplazable de Elementos Encontrados */}
+                <div className="max-h-40 overflow-y-auto mt-2 border border-slate-800 bg-slate-900/40 rounded-lg text-xs">
+                  {filteredPaths.map(p => (
                     <button
-                      type="submit" // Botón de envío
-                      className="bg-emerald-600/20 text-emerald-400 border border-emerald-500/20 hover:bg-emerald-600 hover:text-white rounded-lg p-1 px-2 text-xs transition-colors"
+                      key={p.id}
+                      onClick={() => setSelectedId(p.id)}
+                      className={`w-full text-left px-3 py-2 border-b border-slate-800/60 flex justify-between items-center transition-colors ${
+                        p.id === selectedId 
+                          ? 'bg-emerald-500/10 text-emerald-400 font-semibold'
+                          : 'hover:bg-slate-800/50 text-slate-300'
+                      }`}
                     >
-                      + {/* Signo más */}
+                      <div className="flex flex-col">
+                        <span className="truncate max-w-[160px]">{p.name}</span>
+                        {p.layerId && <span className="text-[9px] text-slate-500 uppercase">Capa: {p.layerId}</span>}
+                      </div>
+                      <span className="text-[10px] text-slate-500 font-mono truncate max-w-[80px]">{p.id}</span>
                     </button>
-                  </form>
+                  ))}
+                  {filteredPaths.length === 0 && paths.length > 0 && (
+                    <div className="p-3 text-slate-500 text-center">Sin resultados coincidentes.</div>
+                  )}
                 </div>
               </div>
-            ) : ( // Si no hay ningún elemento seleccionado
-              <div className="flex-1 flex items-center justify-center text-center p-4 border border-dashed border-slate-800 rounded-xl bg-slate-900/20 text-slate-500 text-xs italic">
-                Seleccioná una porción del mapa o de la lista para editar sus identidades y datos estadísticos.
+
+              {/* Editor de Propiedades del Trazado Seleccionado */}
+              <div className="p-4 flex-1 flex flex-col gap-4">
+                <span className="text-xs font-semibold text-slate-400 tracking-wider uppercase block">
+                  Identidad y Datos Asociados
+                </span>
+
+                {selectedPath ? (
+                  <div className="flex flex-col gap-4 flex-1">
+                    <div>
+                      <label className="text-xs text-slate-400 block mb-1">ID Vectorial Geográfico</label>
+                      <input
+                        type="text"
+                        value={selectedPath.id}
+                        disabled
+                        className="w-full bg-slate-900 border border-slate-800 rounded-lg px-3 py-2 text-xs font-mono text-slate-500 cursor-not-allowed"
+                      />
+                    </div>
+
+                    <div>
+                      <label className="text-xs text-slate-400 block mb-1">Nombre Humano / Jurisdicción</label>
+                      <input
+                        type="text"
+                        value={selectedPath.name}
+                        onChange={(e) => updateSelectedPath('name', e.target.value)}
+                        className="w-full bg-slate-900 border border-slate-800 rounded-lg px-3 py-2 text-xs text-slate-200 focus:outline-none focus:border-emerald-500 font-medium"
+                      />
+                      <p className="text-[10px] text-slate-500 mt-1">
+                        Cambiá este nombre al real (Ej: "Río Paraná", "Francia", "Malvinas")
+                      </p>
+                    </div>
+
+                    <div>
+                      <label className="text-xs text-slate-400 block mb-1">Capa o Categoría Territorial</label>
+                      <input
+                        type="text"
+                        value={selectedPath.layerId || ''}
+                        onChange={(e) => updateSelectedPath('layerId', e.target.value)}
+                        placeholder="Ej: Rios, Lagos, Paises..."
+                        className="w-full bg-slate-900 border border-slate-800 rounded-lg px-3 py-2 text-xs text-slate-200 focus:outline-none focus:border-emerald-500 font-medium"
+                      />
+                    </div>
+
+                    <div className="border border-slate-800 rounded-xl bg-slate-900/60 p-3 flex flex-col gap-3">
+                      <span className="text-xs font-medium text-slate-300 block">
+                        Matriz de Variables e Indicadores
+                      </span>
+
+                      <div className="flex flex-col gap-1.5 max-h-48 overflow-y-auto">
+                        {Object.entries(selectedPath.properties || {}).map(([key, val]) => (
+                          <div key={key} className="flex items-center justify-between bg-slate-900 border border-slate-800 rounded-lg px-3 py-1.5 text-xs">
+                            <div className="flex flex-col">
+                              <span className="font-mono text-emerald-400 font-medium">{key}</span>
+                              <span className="text-slate-300 truncate max-w-[160px]">{String(val)}</span>
+                            </div>
+                            <button
+                              onClick={() => handleRemoveProperty(key)}
+                              className="text-rose-400 hover:text-rose-300 p-1 rounded hover:bg-rose-500/10 transition-colors"
+                              title="Eliminar variable"
+                            >
+                              <Trash2 className="w-3.5 h-3.5" />
+                            </button>
+                          </div>
+                        ))}
+                        {Object.keys(selectedPath.properties || {}).length === 0 && (
+                          <p className="text-[11px] text-slate-500 text-center py-2 italic">
+                            Sin variables cargadas en esta pieza.
+                          </p>
+                        )}
+                      </div>
+
+                      <form onSubmit={handleAddProperty} className="flex gap-1.5 border-t border-slate-800/80 pt-2.5 mt-1">
+                        <input
+                          type="text"
+                          placeholder="Métrica (ej: caudal)"
+                          value={newPropKey}
+                          onChange={(e) => setNewPropKey(e.target.value)}
+                          className="w-1/2 bg-slate-900 border border-slate-800 rounded-lg px-2 py-1 text-[11px] focus:outline-none focus:border-emerald-500 text-slate-200"
+                        />
+                        <input
+                          type="text"
+                          placeholder="Valor (ej: 1200)"
+                          value={newPropValue}
+                          onChange={(e) => setNewPropValue(e.target.value)}
+                          className="w-1/2 bg-slate-900 border border-slate-800 rounded-lg px-2 py-1 text-[11px] focus:outline-none focus:border-emerald-500 text-slate-200"
+                        />
+                        <button
+                          type="submit"
+                          className="bg-emerald-600/20 text-emerald-400 border border-emerald-500/20 hover:bg-emerald-600 hover:text-white rounded-lg p-1 px-2 text-xs transition-colors"
+                        >
+                          +
+                        </button>
+                      </form>
+                    </div>
+                  </div>
+                ) : (
+                  <div className="flex-1 flex items-center justify-center text-center p-4 border border-dashed border-slate-800 rounded-xl bg-slate-900/20 text-slate-500 text-xs italic">
+                    Seleccioná una porción del mapa o de la lista para editar sus identidades y datos estadísticos.
+                  </div>
+                )}
               </div>
-            )}
-          </div>
+            </>
+          )}
+
+          {/* VISTA 2: EDITOR CÓDIGO JSON EN CALIENTE (FASE 3) */}
+          {rightTab === 'json' && (
+            <div className="p-4 flex-1 flex flex-col gap-3 overflow-hidden">
+              {/* ENCABEZADO Y CONTROLES DEL EDITOR */}
+              <div className="flex items-center justify-between gap-2">
+                <div className="flex items-center gap-2">
+                  <Code2 className="w-4 h-4 text-purple-400" />
+                  <span className="text-xs font-bold text-slate-200">Editor JSON Path (Hot Data-Binding)</span>
+                </div>
+
+                {/* Insignia Estado de Sintaxis */}
+                {jsonError ? (
+                  <span className="text-[10px] bg-rose-950/80 text-rose-300 border border-rose-800/80 px-2 py-0.5 rounded-full flex items-center gap-1 font-mono">
+                    <AlertCircle className="w-3 h-3 text-rose-400" />
+                    JSON Inválido
+                  </span>
+                ) : (
+                  <span className="text-[10px] bg-emerald-950/80 text-emerald-300 border border-emerald-800/80 px-2 py-0.5 rounded-full flex items-center gap-1 font-mono">
+                    <Check className="w-3 h-3 text-emerald-400" />
+                    Sincronizado
+                  </span>
+                )}
+              </div>
+
+              {/* BARRA DE ACCIONES RÁPIDAS DEL CÓDIGO */}
+              <div className="flex items-center justify-between gap-2 bg-slate-950 p-2 rounded-xl border border-slate-800 text-xs">
+                <div className="flex items-center gap-2">
+                  {/* Botón Aplicar Código */}
+                  <button
+                    onClick={() => handleApplyJson()}
+                    className="flex items-center gap-1 bg-purple-600 hover:bg-purple-500 text-white px-2.5 py-1 rounded-lg text-xs font-medium transition-colors shadow-sm cursor-pointer"
+                    title="Aplica inmediatamente la estructura JSON al lienzo visual"
+                  >
+                    <FileCode className="w-3.5 h-3.5" />
+                    <span>Aplicar Código</span>
+                  </button>
+
+                  {/* Botón Formatear */}
+                  <button
+                    onClick={handleFormatJson}
+                    className="flex items-center gap-1 bg-slate-800 hover:bg-slate-700 text-slate-300 px-2 py-1 rounded-lg text-xs transition-colors cursor-pointer"
+                    title="Ajusta la identación y formato del código"
+                  >
+                    <RotateCcw className="w-3 h-3" />
+                    <span>Formatear</span>
+                  </button>
+
+                  {/* Botón Copiar */}
+                  <button
+                    onClick={handleCopyJson}
+                    className="flex items-center gap-1 bg-slate-800 hover:bg-slate-700 text-slate-300 px-2 py-1 rounded-lg text-xs transition-colors cursor-pointer"
+                    title="Copia el JSON al portapapeles"
+                  >
+                    <Copy className="w-3 h-3" />
+                    <span>Copiar</span>
+                  </button>
+                </div>
+
+                {/* Switch de Auto-Sync */}
+                <label className="flex items-center gap-1.5 text-[11px] text-slate-400 cursor-pointer select-none">
+                  <input
+                    type="checkbox"
+                    checked={isAutoSync}
+                    onChange={(e) => setIsAutoSync(e.target.checked)}
+                    className="accent-purple-500 rounded cursor-pointer"
+                  />
+                  <span>En vivo</span>
+                </label>
+              </div>
+
+              {/* ÁREA DE EDICIÓN DE CÓDIGO (TEXTAREA MULTILÍNEA ESTILIZADO) */}
+              <div className="flex-1 flex flex-col relative min-h-[350px]">
+                <textarea
+                  value={jsonText}
+                  onChange={handleJsonTextChange}
+                  placeholder={`[\n  {\n    "id": "prov-1",\n    "name": "Provincia Muestra",\n    "d": "M 100 100 L 200 100 L 200 200 Z",\n    "fill": "#10b981",\n    "layerId": "General"\n  }\n]`}
+                  className="w-full flex-1 font-mono text-xs bg-[#050914] text-emerald-300 p-3.5 rounded-xl border border-slate-800 resize-none focus:outline-none focus:border-purple-500/80 leading-relaxed tracking-wide selection:bg-purple-900 selection:text-white font-mono shadow-inner"
+                  spellCheck={false}
+                />
+              </div>
+
+              {/* MUESTRA DE ERROR DE SINTAXIS (SAFE PARSE) */}
+              {jsonError && (
+                <div className="p-3 bg-rose-950/80 border border-rose-800/80 rounded-xl text-rose-300 text-xs font-mono flex items-start gap-2 shadow-lg animate-fadeIn">
+                  <AlertCircle className="w-4 h-4 text-rose-400 shrink-0 mt-0.5" />
+                  <div className="flex flex-col">
+                    <span className="font-bold text-rose-200">Error de Sintaxis JSON:</span>
+                    <span className="break-all text-[11px]">{jsonError}</span>
+                  </div>
+                </div>
+              )}
+
+              <p className="text-[10px] text-slate-500 text-center italic">
+                Edita los paths en caliente. Al modificar "d", "fill" o las coordenadas, el lienzo se actualizará inmediatamente.
+              </p>
+            </div>
+          )}
         </div>
       </div>
     </div>
