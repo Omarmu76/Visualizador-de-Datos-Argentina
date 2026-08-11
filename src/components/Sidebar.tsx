@@ -3,43 +3,50 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import React, { useState } from 'react';
-import { Download, Copy, Share2, HelpCircle, Check } from 'lucide-react';
+import React, { useState } from 'react'; // Importación de React y hook de estado local
+import { useNavigate } from 'react-router-dom'; // Importación de hook para navegación por rutas
+import { Download, Copy, Share2, HelpCircle, Check, BookOpen } from 'lucide-react'; // Importación de íconos de Lucide-React
 
+// Componente de la barra lateral de herramientas y botones contextuales rápidos
 export default function Sidebar() {
-  const [copied, setCopied] = useState(false);
-  const [downloading, setDownloading] = useState(false);
-  const [sharing, setSharing] = useState(false);
-  const [showHelp, setShowHelp] = useState(false);
+  const navigate = useNavigate(); // Hook para redirigir dinámicamente entre rutas
+  const [copied, setCopied] = useState(false); // Estado para controlar animación de código copiado
+  const [downloading, setDownloading] = useState(false); // Estado para simular descarga de datos
+  const [sharing, setSharing] = useState(false); // Estado para simular la acción de compartir
+  const [showHelp, setShowHelp] = useState(false); // Estado para alternar la visibilidad de la tarjeta rápida de ayuda
 
+  // Función para copiar código o datos al portapapeles del navegador
   const handleCopy = () => {
-    setCopied(true);
-    navigator.clipboard.writeText('NACIÓN > BUENOS AIRES (Pobreza: 20%, Desempleo: 13.9%, Gini: 63.61%)');
-    setTimeout(() => setCopied(false), 2000);
+    setCopied(true); // Marca estado de copiado activo
+    navigator.clipboard.writeText('NACIÓN > BUENOS AIRES (Pobreza: 20%, Desempleo: 13.9%, Gini: 63.61%)'); // Escribe al portapapeles
+    setTimeout(() => setCopied(false), 2000); // Restablece estado después de 2 segundos
   };
 
+  // Función para simular la descarga del paquete JSON con datos
   const handleDownload = () => {
-    setDownloading(true);
-    setTimeout(() => {
-      setDownloading(false);
-      alert('Descarga completada: archivo ar_dashboard_data.json listo.');
-    }, 1500);
+    setDownloading(true); // Activa el indicador visual de descarga
+    setTimeout(() => { // Simula retardo de red
+      setDownloading(false); // Desactiva el indicador
+      alert('Descarga completada: archivo ar_dashboard_data.json listo.'); // Alerta de éxito
+    }, 1500); // 1.5 segundos
   };
 
+  // Función para copiar el enlace de compartir
   const handleShare = () => {
-    setSharing(true);
-    setTimeout(() => {
-      setSharing(false);
-      alert('Vínculo de acceso copiado al portapapeles.');
-    }, 1200);
+    setSharing(true); // Marca estado de compartiendo
+    setTimeout(() => { // Simula retardo
+      setSharing(false); // Finaliza estado
+      alert('Vínculo de acceso copiado al portapapeles.'); // Notificación de éxito
+    }, 1200); // 1.2 segundos
   };
 
   return (
+    // Contenedor principal de la barra lateral adaptable
     <div id="right-sidebar-actions" className="w-full lg:w-16 bg-slate-950 border-t lg:border-t-0 lg:border-l border-slate-800 flex flex-row lg:flex-col items-center justify-around lg:justify-start lg:space-y-6 lg:py-6 p-4 relative lg:h-full">
-      {/* Botón Descargar */}
+      {/* Botón Descargar Datos */}
       <button
-        onClick={handleDownload}
-        disabled={downloading}
+        onClick={handleDownload} // Ejecuta la descarga
+        disabled={downloading} // Deshabilita mientras descarga
         className="flex flex-col items-center group space-y-1 text-slate-500 hover:text-emerald-400 focus:outline-none cursor-pointer transition-colors"
       >
         <div className="p-2 rounded bg-slate-900 group-hover:bg-slate-800 border border-slate-800 group-hover:border-slate-700 transition-all">
@@ -52,7 +59,7 @@ export default function Sidebar() {
 
       {/* Botón Copiar Código */}
       <button
-        onClick={handleCopy}
+        onClick={handleCopy} // Ejecuta la copia
         className="flex flex-col items-center group space-y-1 text-slate-500 hover:text-emerald-400 focus:outline-none cursor-pointer transition-colors"
       >
         <div className="p-2 rounded bg-slate-900 group-hover:bg-slate-800 border border-slate-800 group-hover:border-slate-700 transition-all">
@@ -69,7 +76,7 @@ export default function Sidebar() {
 
       {/* Botón Exportar */}
       <button
-        onClick={handleShare}
+        onClick={handleShare} // Ejecuta compartir
         className="flex flex-col items-center group space-y-1 text-slate-500 hover:text-emerald-400 focus:outline-none cursor-pointer transition-colors"
       >
         <div className="p-2 rounded bg-slate-900 group-hover:bg-slate-800 border border-slate-800 group-hover:border-slate-700 transition-all">
@@ -80,9 +87,9 @@ export default function Sidebar() {
         </span>
       </button>
 
-      {/* Botón Ayuda */}
+      {/* Botón Ayuda y Guía de Uso Admin */}
       <button
-        onClick={() => setShowHelp(!showHelp)}
+        onClick={() => setShowHelp(!showHelp)} // Alterna ventana flotante de ayuda
         className="flex flex-col items-center group space-y-1 text-slate-500 hover:text-emerald-400 focus:outline-none cursor-pointer transition-colors"
       >
         <div className="p-2 rounded bg-slate-900 group-hover:bg-slate-800 border border-slate-800 group-hover:border-slate-700 transition-all">
@@ -93,27 +100,39 @@ export default function Sidebar() {
         </span>
       </button>
 
-      {/* Help Modal / Floating Card */}
+      {/* Modal / Tarjeta Flotante de Ayuda Rápida */}
       {showHelp && (
-        <div className="absolute right-4 bottom-18 lg:right-18 lg:bottom-4 z-50 bg-slate-950 text-slate-100 p-5 rounded border border-slate-800 w-64 text-xs flex flex-col space-y-2 pointer-events-auto shadow-2xl">
-          <h4 className="font-bold text-sm text-slate-100 font-serif italic">Guía del Visualizador</h4>
+        <div className="absolute right-4 bottom-18 lg:right-18 lg:bottom-4 z-50 bg-slate-950 text-slate-100 p-5 rounded-xl border border-slate-800 w-72 text-xs flex flex-col space-y-3 pointer-events-auto shadow-2xl">
+          <div className="flex items-center justify-between border-b border-slate-800 pb-2">
+            <h4 className="font-bold text-sm text-white flex items-center gap-1.5">
+              <HelpCircle size={16} className="text-emerald-400" />
+              Guía del Visualizador
+            </h4>
+          </div>
           <p className="text-slate-400 leading-relaxed">
-            1. <strong>Mapa Interactivo:</strong> Haz clic sobre cualquier provincia en el mapa para actualizar los indicadores económicos y sociales del sector derecho.
+            1. <strong>Mapa Interactivo:</strong> Haz clic sobre cualquier provincia para actualizar métricas.
           </p>
           <p className="text-slate-400 leading-relaxed">
-            2. <strong>Filtros:</strong> Selecciona métricas de escala de color arriba del mapa.
+            2. <strong>Filtros y Escalas:</strong> Elige métricas de color sobre el mapa.
           </p>
           <p className="text-slate-400 leading-relaxed">
-            3. <strong>Minimapa:</strong> Visualiza subdivisiones o municipios de la provincia seleccionada para un detalle geográfico granular.
+            3. <strong>Súper Editor y Jerarquía:</strong> Accede al tutorial paso a paso de convenciones.
           </p>
+
+          {/* Botón para navegar a la ruta completa de Guía de Ayuda Admin */}
           <button
-            onClick={() => setShowHelp(false)}
-            className="mt-2 bg-emerald-600 hover:bg-emerald-500 font-bold py-1.5 rounded text-white transition-colors cursor-pointer"
+            onClick={() => {
+              setShowHelp(false); // Cierra la tarjeta flotante
+              navigate('/admin/ayuda'); // Navega a la ruta /admin/ayuda
+            }}
+            className="w-full bg-emerald-600 hover:bg-emerald-500 font-bold py-2 rounded-lg text-white transition-colors cursor-pointer flex items-center justify-center space-x-2 text-xs shadow-md"
           >
-            Entendido
+            <BookOpen size={14} />
+            <span>Abrir Guía Completa (/admin/ayuda)</span>
           </button>
         </div>
       )}
     </div>
   );
 }
+

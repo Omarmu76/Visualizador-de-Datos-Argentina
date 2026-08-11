@@ -74,6 +74,7 @@ export interface ProvinceData {
     publicTransportLines: number; // Cantidad de líneas de transporte público
   };
   municipalities: MunicipalityData[]; // Lista de municipios o departamentos que componen la provincia
+  d?: string; // Trazado o silueta SVG opcional de la provincia o entidad macro
   mapTransform?: { scale: number; panX: number; panY: number }; // Transformación de escala y traslación calibrada
 }
 
@@ -137,6 +138,10 @@ export interface VectorPathItem {
   category?: string; // Nivel o tipo de territorio ('pais', 'provincia', 'municipio', 'cuerpo_humano', etc.)
   ownerId?: string; // ID del creador/propietario ('system' para mapas globales, o ID del usuario Pro)
   parentId?: string; // ID del nodo o territorio padre ('WORLD', 'BRA', etc.)
+  groupId?: string; // ID del grupo al que pertenece este trazo si está agrupado
+  groupName?: string; // Nombre amigable del grupo al que pertenece
+  isGroup?: boolean; // Indica si esta entidad representa un contenedor de grupo
+  isCombined?: boolean; // Indica si esta entidad es el resultado de combinar/unir múltiples geometrías
   referenceMapId?: string; // Mapa de referencia padre para la auto-acomodación
   isApproved?: boolean; // Indica si el Super Admin ha aprobado este mapa para publicación global
   fill?: string; // Color de relleno directo
@@ -170,4 +175,52 @@ export interface VectorMapEntity {
   createdAt?: string; // Marca de tiempo ISO de creación del mapa
   updatedAt?: string; // Marca de tiempo ISO de última edición del mapa
 }
+
+// ============================================================================
+// MÓDULO DE CONFIGURACIÓN DINÁMICA DE PALETAS Y DASHBOARD BUILDER (MODO COROPLETA / CARTOGRÁFICO)
+// ============================================================================
+
+// Tipo de modo de visualización de colores en el mapa vectorial
+export type MapVisualizationMode = 'cartographic' | 'choropleth' | 'custom'; // 1. Estilo institucional base, 2. Escala de calor estadística por datos, 3. Colores manuales elegidos por pieza
+
+// Interfaz para la configuración de la paleta de colores del mapa vectorial
+export interface PaletteConfig {
+  mode: MapVisualizationMode; // Modo de color activo ('cartographic', 'choropleth', 'custom')
+  baseColor: string; // Color base para territorios sin datos o en modo institucional (ej: '#0f1a30')
+  minColor: string; // Color hexadecimal asignado al valor mínimo en la escala coropleta (ej: '#064e3b' o '#e0f2fe')
+  maxColor: string; // Color hexadecimal asignado al valor máximo en la escala coropleta (ej: '#10b981' o '#f43f5e')
+  selectedColor: string; // Color destacado al hacer clic sobre una pieza/territorio (ej: '#10b981')
+  hoverColor: string; // Color translúcido de resaltado al pasar el puntero sobre una pieza (ej: '#34d399')
+  strokeColor: string; // Color del contorno geográfico por defecto (ej: '#334155')
+  strokeWidth: number; // Grosor por defecto del contorno en píxeles (ej: 1.2)
+}
+
+// Interfaz para definir la configuración individual de un elemento de gráfico en el Dashboard Builder
+export interface DashboardConfigItem {
+  id: string; // Identificador único de la métrica o módulo visual (ej: 'kpi-poblacion', 'bar-pobreza')
+  dataKey: string; // Clave de la propiedad en customData/stats (ej: 'poblacion', 'pobreza', 'desempleo', 'gini')
+  label: string; // Etiqueta descriptiva y legible para el usuario (ej: 'Tasa de Pobreza (%)', 'Habitantes Total')
+  chartType: 'kpi' | 'bar' | 'pie' | 'line' | 'area'; // Tipo de componente gráfico a renderizar
+  color?: string; // Color primario personalizado para este módulo gráfico (ej: '#10b981')
+}
+
+// Interfaz contenedora completa para la configuración global del Dashboard del Administrador
+export interface DashboardConfig {
+  activeDataKey: string; // Clave de datos actualmente activa para colorear el mapa coropleta (ej: 'pobreza')
+  palette: PaletteConfig; // Configuración de colores del mapa
+  items: DashboardConfigItem[]; // Lista ordenada de módulos/gráficos configurados por el Administrador
+}
+
+// Interfaz para representar un nodo o polígono dentro de un mapa vectorial (ej: Países del mundo, provincias, municipios)
+export interface MapPathNode {
+  id: string; // Código ISO Alpha-3 en mayúsculas (ej. "ARG", "BRA", "USA", "ESP")
+  name: string; // Nombre oficial del país o entidad territorial en Español
+  d: string; // Trazado SVG o cadena de coordenadas geométricas (placeholder "" o path SVG)
+  parentId?: string | null; // Identificador del nivel superior ("MUNDO" o código de continente)
+  category?: string; // Categoría jerárquica ("País", "Continente", "Provincia", "Municipio")
+  stats?: Record<string, any>; // Estadísticas o indicadores opcionales
+  customData?: Record<string, any>; // Metadatos adicionales libres
+}
+
+
 

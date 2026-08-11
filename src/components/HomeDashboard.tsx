@@ -274,24 +274,31 @@ export default function HomeDashboard({
               </div>
             </div>
 
-            {/* PÍLDORAS CON LA RUTA ESTRICTA: Mundo > Continente > País > Provincia > Municipio */}
+            {/* PÍLDORAS CON LA RUTA ESTRICTA CLICABLES: Mundo > Continente > País > Provincia > Municipio */}
             <div className="relative z-10 space-y-2 pt-4 border-t border-slate-800/60">
               <span className="text-[10px] font-bold text-slate-500 uppercase tracking-widest block">
-                Ruta Jerárquica Estricta:
+                Ruta Jerárquica Estricta (Haz clic para ir directo al nivel):
               </span>
               <div className="flex flex-wrap items-center gap-1.5">
                 {[
-                  { label: 'Mundo', step: 1 },
-                  { label: 'Continente', step: 2 },
-                  { label: 'País', step: 3 },
-                  { label: 'Provincia', step: 4 },
-                  { label: 'Municipio', step: 5 }
+                  { label: 'Mundo', step: 1, node: { id: 'world', name: 'Mundo', type: 'world' } },
+                  { label: 'Continente', step: 2, node: { id: 'continent', name: 'América del Sur', type: 'continent' } },
+                  { label: 'País', step: 3, node: { id: 'country', name: 'Argentina', type: 'country' } },
+                  { label: 'Provincia', step: 4, node: { id: 'AR-B', name: 'Buenos Aires', type: 'provincia' } },
+                  { label: 'Municipio', step: 5, node: { id: 'ba1', name: 'La Matanza', type: 'subdivision' } }
                 ].map((item, idx) => (
                   <React.Fragment key={item.label}>
-                    <span className="text-[10px] bg-slate-950 border border-slate-800 text-emerald-300/90 px-2.5 py-1 rounded-md font-semibold flex items-center space-x-1">
+                    <button
+                      type="button"
+                      onClick={(e) => {
+                        e.stopPropagation(); // Evita disparar el clic general de la tarjeta
+                        onNavigateToNode(item.node as NavNode); // Navega directamente al nivel seleccionado
+                      }}
+                      className="text-[10px] bg-slate-950 hover:bg-emerald-950 border border-slate-800 hover:border-emerald-500/80 text-emerald-300/90 hover:text-emerald-300 px-2.5 py-1 rounded-md font-semibold flex items-center space-x-1 cursor-pointer transition-all shadow-sm hover:scale-105"
+                    >
                       <span className="text-[8px] text-emerald-500/60 font-mono">#{item.step}</span>
                       <span>{item.label}</span>
-                    </span>
+                    </button>
                     {idx < 4 && <ChevronRight size={12} className="text-slate-600 shrink-0" />}
                   </React.Fragment>
                 ))}
@@ -333,24 +340,31 @@ export default function HomeDashboard({
               </div>
             </div>
 
-            {/* PÍLDORAS CON LA RUTA ESTRICTA: Organismo > Sistema Orgánico > Órgano Vital > Tejido > Célula */}
+            {/* PÍLDORAS CON LA RUTA ESTRICTA CLICABLES: Organismo > Sistema Orgánico > Órgano Vital > Tejido > Célula */}
             <div className="relative z-10 space-y-2 pt-4 border-t border-slate-800/60">
               <span className="text-[10px] font-bold text-slate-500 uppercase tracking-widest block">
-                Ruta Jerárquica Anatómica:
+                Ruta Jerárquica Anatómica (Haz clic para ir directo al nivel):
               </span>
               <div className="flex flex-wrap items-center gap-1.5">
                 {[
-                  { label: 'Organismo', step: 1 },
-                  { label: 'Sistema Orgánico', step: 2 },
-                  { label: 'Órgano Vital', step: 3 },
-                  { label: 'Tejido', step: 4 },
-                  { label: 'Célula', step: 5 }
+                  { label: 'Organismo', step: 1, node: { id: 'salud', name: 'Organismo Humano', type: 'salud' } },
+                  { label: 'Sistema Orgánico', step: 2, node: { id: 'sistema_cardiovascular', name: 'Sistema Cardiovascular', type: 'salud' } },
+                  { label: 'Órgano Vital', step: 3, node: { id: 'corazon', name: 'Corazón Humano', type: 'salud' } },
+                  { label: 'Tejido', step: 4, node: { id: 'miocardio', name: 'Tejido Miocárdico', type: 'salud' } },
+                  { label: 'Célula', step: 5, node: { id: 'cardiomiocito', name: 'Célula Miocito', type: 'salud' } }
                 ].map((item, idx) => (
                   <React.Fragment key={item.label}>
-                    <span className="text-[10px] bg-slate-950 border border-slate-800 text-rose-300/90 px-2.5 py-1 rounded-md font-semibold flex items-center space-x-1">
+                    <button
+                      type="button"
+                      onClick={(e) => {
+                        e.stopPropagation(); // Evita disparar el clic general de la tarjeta
+                        onNavigateToNode(item.node as NavNode); // Navega directamente al nivel seleccionado
+                      }}
+                      className="text-[10px] bg-slate-950 hover:bg-rose-950 border border-slate-800 hover:border-rose-500/80 text-rose-300/90 hover:text-rose-300 px-2.5 py-1 rounded-md font-semibold flex items-center space-x-1 cursor-pointer transition-all shadow-sm hover:scale-105"
+                    >
                       <span className="text-[8px] text-rose-500/60 font-mono">#{item.step}</span>
                       <span>{item.label}</span>
-                    </span>
+                    </button>
                     {idx < 4 && <ChevronRight size={12} className="text-slate-600 shrink-0" />}
                   </React.Fragment>
                 ))}

@@ -3,112 +3,229 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import React, { useState } from 'react'; // React base
-import { FileText, Download, User, CheckCircle2, Shield, ShieldAlert, ShieldCheck, LogOut, LogIn, Mail, Lock, ChevronDown, Star, MapPin, ChevronRight, Edit, Briefcase, Building, Search, Compass, Layers, Globe } from 'lucide-react'; // Íconos Lucide
-import { UserRole, RegionNode, UserProfile } from '../types'; // Importación de tipos de TypeScript
+// IMPORTACIONES DE REACT Y HOOKS BASE
+import React, { useState, useMemo } from 'react'; // Importa React y los hooks useState y useMemo para estados y memoización
 
-// Interfaz para las opciones de subdivisiones en el menú desplegable de la cabecera
+// IMPORTACIÓN DE ÍCONOS VECTORIALES DE LUCIDE-REACT
+import { 
+  FileText, // Ícono de documento de texto o PDF
+  Download, // Ícono de descarga / guardar como
+  User, // Ícono de usuario genérico
+  CheckCircle2, // Ícono de verificación
+  Shield, // Ícono de escudo de seguridad
+  ShieldAlert, // Ícono de alerta de seguridad
+  ShieldCheck, // Ícono de seguridad verificada
+  LogOut, // Ícono de cerrar sesión
+  LogIn, // Ícono de iniciar sesión
+  Mail, // Ícono de correo electrónico
+  Lock, // Ícono de candado para contraseña
+  ChevronDown, // Ícono de flecha desplegable hacia abajo
+  Star, // Ícono de estrella
+  MapPin, // Ícono de pin de ubicación geográfica
+  ChevronRight, // Ícono de flecha hacia la derecha para breadcrumbs
+  Edit, // Ícono de edición / lápiz
+  Briefcase, // Ícono de maletín para cargo laboral
+  Building, // Ícono de edificio para empresa u organización
+  Search, // Ícono de lupa de búsqueda
+  Compass, // Ícono de brújula de navegación
+  Layers, // Ícono de capas territoriales
+  Globe, // Ícono de globo terráqueo para países
+  FilePlus, // Ícono de nuevo proyecto
+  FolderOpen, // Ícono de abrir archivo/proyecto
+  Save, // Ícono de disco/guardar
+  XCircle // Ícono de cerrar proyecto
+} from 'lucide-react'; // Colección de íconos UI
+
+// IMPORTACIÓN DE TIPOS Y MODELOS DE DATOS DE TYPESCRIPT
+import { UserRole, RegionNode, UserProfile } from '../types'; // Tipos de datos para roles RBAC, nodos geográficos y perfiles
+
+// INTERFAZ PARA LAS OPCIONES DE SUBDIVISIONES EN EL MENÚ DESPLEGABLE
 export interface SubdivisionOption {
-  id: string; // Identificador único de la subdivisión (ej. AR-M)
-  name: string; // Nombre amigable (ej. Misiones)
-  value?: number; // Valor numérico opcional o porcentaje
-}
+  id: string; // Identificador único de la subdivisión geográfica (ej. AR-M)
+  name: string; // Nombre amigable (ej. Mendoza)
+  value?: number; // Valor numérico o porcentaje asociado opcional
+} // Fin de SubdivisionOption
 
-// Interfaz que describe las propiedades requeridas por el Header
+// INTERFAZ QUE DEFINE TODAS LAS PROPIEDADES (PROPS) ACEPTADAS POR EL HEADER
 interface HeaderProps {
-  isAdmin: boolean; // Indica si el rol de administrador está activo en el sistema
-  userRole?: UserRole; // Rol RBAC activo ('guest' | 'pro' | 'admin')
-  currentUser?: UserProfile; // Objeto de perfil completo del usuario activo
-  onOpenProfileModal?: () => void; // Disparador para abrir el modal de edición de perfil personal
-  onLogin: (remember: boolean) => void; // Disparador para iniciar sesión con opción de persistencia
-  onLogout: () => void; // Disparador para cerrar la sesión actual
-  onSelectRole?: (role: UserRole) => void; // Disparador para cambiar de rol RBAC directamente
-  navigationPath?: any[]; // Historial de ruta para las migas de pan globales (MUNDO > CONTINENTE > PAÍS...)
-  onBreadcrumbClick?: (index: number) => void; // Manejador de clics en la navegación de migas de pan
-  subdivisions?: SubdivisionOption[]; // Lista de subdivisiones o regiones del nodo activo
-  onSelectSubdivision?: (id: string) => void; // Disparador para seleccionar una subdivisión del menú
-}
+  isAdmin: boolean; // Indica si el rol de administrador está activo
+  userRole?: UserRole; // Rol RBAC del usuario ('guest' | 'pro' | 'admin')
+  currentUser?: UserProfile; // Objeto con la información de perfil del usuario
+  onOpenProfileModal?: () => void; // Disparador para abrir el modal de edición de perfil
+  onLogin: (remember: boolean) => void; // Disparador para iniciar sesión
+  onLogout: () => void; // Disparador para cerrar sesión
+  onSelectRole?: (role: UserRole) => void; // Disparador para cambiar de rol directamente
+  navigationPath?: any[]; // Historial de ruta activa para las migas de pan globales
+  onBreadcrumbClick?: (index: number) => void; // Manejador de clics en las migas de pan
+  subdivisions?: SubdivisionOption[]; // Lista de subdivisiones o municipios del nodo activo
+  onSelectSubdivision?: (id: string) => void; // Disparador para seleccionar una subdivisión
+  // PROPIEDADES DEL GESTOR DE CICLO DE VIDA DE PROYECTOS (PROJECT LIFECYCLE MANAGEMENT)
+  projectName?: string; // Nombre editable del proyecto activo
+  isDirty?: boolean; // Indicador booleano de cambios sin guardar en el proyecto
+  onProjectNameChange?: (name: string) => void; // Manejador para actualizar el nombre del proyecto
+  onNewProject?: () => void; // Disparador para inicializar un proyecto nuevo en blanco
+  onOpenProject?: () => void; // Disparador para abrir un proyecto desde archivo local JSON
+  onSaveProject?: () => void; // Disparador para guardar cambios (in-place sobreescribir o guardar como)
+  onSaveAsProject?: () => void; // Disparador para exportar o Guardar Como nuevo archivo JSON
+  onCloseProject?: () => void; // Disparador para cerrar el proyecto activo y limpiar lienzo
+} // Fin de HeaderProps
 
+// COMPONENTE HEADER: CABECERA PRINCIPAL CON NAVEGACIÓN, GESTIÓN DE PROYECTOS Y BARRA RBAC
 export default function Header({ 
-  isAdmin, 
-  userRole = 'guest', 
-  currentUser,
-  onOpenProfileModal,
-  onLogin, 
-  onLogout, 
-  onSelectRole,
-  navigationPath = [],
-  onBreadcrumbClick,
-  subdivisions = [],
-  onSelectSubdivision
-}: HeaderProps) {
-  const [exporting, setExporting] = useState<string | null>(null);
-  const [showProfileMenu, setShowProfileMenu] = useState<boolean>(false); // Controla el estado abierto/cerrado del panel de perfil
-  const [showSelectionMenu, setShowSelectionMenu] = useState<boolean>(false); // Controla el estado del desplegable "Índice de Selección / Ruta"
-  const [subSearch, setSubSearch] = useState<string>(''); // Búsqueda de subdivisiones en el desplegable
-  const [emailInput, setEmailInput] = useState<string>(''); // Dejado vacío por defecto
-  const [passwordInput, setPasswordInput] = useState<string>(''); // Dejado vacío por defecto
-  const [rememberMe, setRememberMe] = useState<boolean>(false); // Controla la opción de "Mantener sesión activa"
-  const [loginError, setLoginError] = useState<string | null>(null); // Estado para controlar y mostrar errores de login
+  isAdmin, // Destructura isAdmin de las props
+  userRole = 'guest', // Destructura userRole con valor por defecto 'guest'
+  currentUser, // Destructura currentUser de las props
+  onOpenProfileModal, // Destructura onOpenProfileModal
+  onLogin, // Destructura onLogin
+  onLogout, // Destructura onLogout
+  onSelectRole, // Destructura onSelectRole
+  navigationPath = [], // Destructura navigationPath con arreglo vacío por defecto
+  onBreadcrumbClick, // Destructura onBreadcrumbClick
+  subdivisions = [], // Destructura subdivisions con arreglo vacío por defecto
+  onSelectSubdivision, // Destructura onSelectSubdivision
+  projectName = 'Proyecto Sin Título', // Destructura projectName con título por defecto
+  isDirty = false, // Destructura isDirty con false por defecto
+  onProjectNameChange, // Destructura onProjectNameChange
+  onNewProject, // Destructura onNewProject
+  onOpenProject, // Destructura onOpenProject
+  onSaveProject, // Destructura onSaveProject
+  onSaveAsProject, // Destructura onSaveAsProject
+  onCloseProject // Destructura onCloseProject
+}: HeaderProps) { // Firma del componente Header
 
-  // Nodo activo actual extraído dinámicamente del último elemento del array navigationPath
-  const activeNode = navigationPath && navigationPath.length > 0 ? navigationPath[navigationPath.length - 1] : { id: 'root', name: 'Inicio' };
+  // ESTADO PARA GESTIONAR LA EXPORTACIÓN DE REPORTES (PDF O EXCEL)
+  const [exporting, setExporting] = useState<string | null>(null); // Nombre del formato en proceso de exportación o null
+  // ESTADO PARA MOSTRAR/OCULTAR EL MENÚ DESPLEGABLE DEL PERFIL DE USUARIO
+  const [showProfileMenu, setShowProfileMenu] = useState<boolean>(false); // Visibilidad del panel de perfil y login
+  // ESTADO PARA MOSTRAR/OCULTAR EL MENÚ DESPLEGABLE DEL SELECTOR TERRITORIAL
+  const [showSelectionMenu, setShowSelectionMenu] = useState<boolean>(false); // Visibilidad del panel de índice territorial
+  // ESTADO PARA EL FILTRO DE BÚSQUEDA DENTRO DEL DESPLEGABLE TERRITORIAL
+  const [subSearch, setSubSearch] = useState<string>(''); // Cadena ingresada por el usuario para filtrar
+  // ESTADOS PARA CAMPOS DEL FORMULARIO DE INICIO DE SESIÓN MANUAL
+  const [emailInput, setEmailInput] = useState<string>(''); // Estado del campo de correo electrónico
+  const [passwordInput, setPasswordInput] = useState<string>(''); // Estado del campo de contraseña
+  const [rememberMe, setRememberMe] = useState<boolean>(false); // Estado del checkbox de recordar sesión
+  const [loginError, setLoginError] = useState<string | null>(null); // Estado para almacenar mensajes de error de acceso
+
+  // NODO ACTIVO ACTUAL EXTRAÍDO DINÁMICAMENTE DEL ÚLTIMO ELEMENTO DE NAVIGATIONPATH
+  const activeNode = navigationPath && navigationPath.length > 0 ? navigationPath[navigationPath.length - 1] : { id: 'root', name: 'Inicio' }; // Obtiene el nodo terminal
   
-  // Filtrado dinámico de subdivisiones según la búsqueda
-  const filteredSubdivisions = subdivisions.filter(sub => 
-    sub.name.toLowerCase().includes(subSearch.toLowerCase()) || 
-    sub.id.toLowerCase().includes(subSearch.toLowerCase())
-  );
+  // ESTADO PARA LA BÚSQUEDA ASISTIDA GLOBAL ESTILO GOOGLE
+  const [assistedSearch, setAssistedSearch] = useState<string>(''); // Término para la búsqueda asistida global
+  const [showSearchDropdown, setShowSearchDropdown] = useState<boolean>(false); // Controla la visibilidad de sugerencias
+  const [collapsedSections, setCollapsedSections] = useState<Record<string, boolean>>({ // Estado de acordeones colapsables
+    paises: false, // Sección de países desplegada por defecto
+    provincias: false, // Sección de provincias desplegada por defecto
+    subdivisiones: false // Sección de subdivisiones locales colapsada por defecto
+  }); // Fin del estado collapsedSections
 
-  // Simulación de exportación de reportes locales
-  const handleExport = (type: 'PDF' | 'Excel') => {
-    setExporting(type);
-    setTimeout(() => {
-      setExporting(null);
-      alert(`Éxito: Reporte exportado a formato ${type} correctamente.`);
-    }, 1500);
-  };
+  // CATÁLOGO COMPLETO GLOBAL DE PAÍSES PARA EL BUSCADOR ASISTIDO TIPO GOOGLE
+  const globalCountriesCatalog = useMemo(() => [ // Arreglo memorizado de países
+    { id: 'AR', name: 'Argentina (República Argentina)', flag: '🇦🇷', level: 'country', category: 'País / Nacional' },
+    { id: 'BR', name: 'Brasil (República Federativa do Brasil)', flag: '🇧🇷', level: 'country', category: 'País / Internacional' },
+    { id: 'CL', name: 'Chile (República de Chile)', flag: '🇨🇱', level: 'country', category: 'País / Internacional' },
+    { id: 'UY', name: 'Uruguay (República Oriental del Uruguay)', flag: '🇺🇾', level: 'country', category: 'País / Internacional' },
+    { id: 'CO', name: 'Colombia (República de Colombia)', flag: '🇨🇴', level: 'country', category: 'País / Internacional' },
+    { id: 'PE', name: 'Perú (República del Perú)', flag: '🇵🇪', level: 'country', category: 'País / Internacional' },
+    { id: 'MX', name: 'México (Estados Unidos Mexicanos)', flag: '🇲🇽', level: 'country', category: 'País / Internacional' },
+    { id: 'ES', name: 'España (Reino de España)', flag: '🇪🇸', level: 'country', category: 'País / Internacional' },
+    { id: 'US', name: 'Estados Unidos (United States of America)', flag: '🇺🇸', level: 'country', category: 'País / Internacional' }
+  ], []); // Fin de globalCountriesCatalog
 
-  // Maneja la validación de inicio de sesión manual para el administrador
-  const handleManualLogin = (e: React.FormEvent) => {
-    e.preventDefault(); // Evita la recarga por defecto del navegador en el formulario
-    
-    // Validamos que los campos no estén vacíos en la interfaz
-    if (!emailInput || !passwordInput) {
-      setLoginError('Por favor completa todos los campos.'); // Error ante campos incompletos
-      return;
-    }
+  // CATÁLOGO COMPLETO DE LAS 24 PROVINCIAS DE ARGENTINA ORDENADAS ALFABÉTICAMENTE A-Z
+  const globalProvincesCatalog = useMemo(() => [ // Arreglo memorizado de las 24 provincias
+    { id: 'AR-B', name: 'Buenos Aires', flag: '🇦🇷', category: 'Provincia Argentina' },
+    { id: 'AR-C', name: 'CABA (Ciudad Autónoma de Buenos Aires)', flag: '🇦🇷', category: 'Provincia / Capital' },
+    { id: 'AR-K', name: 'Catamarca', flag: '🇦🇷', category: 'Provincia Argentina' },
+    { id: 'AR-H', name: 'Chaco', flag: '🇦🇷', category: 'Provincia Argentina' },
+    { id: 'AR-U', name: 'Chubut', flag: '🇦🇷', category: 'Provincia Argentina' },
+    { id: 'AR-X', name: 'Córdoba', flag: '🇦🇷', category: 'Provincia Argentina' },
+    { id: 'AR-W', name: 'Corrientes', flag: '🇦🇷', category: 'Provincia Argentina' },
+    { id: 'AR-E', name: 'Entre Ríos', flag: '🇦🇷', category: 'Provincia Argentina' },
+    { id: 'AR-P', name: 'Formosa', flag: '🇦🇷', category: 'Provincia Argentina' },
+    { id: 'AR-Y', name: 'Jujuy', flag: '🇦🇷', category: 'Provincia Argentina' },
+    { id: 'AR-L', name: 'La Pampa', flag: '🇦🇷', category: 'Provincia Argentina' },
+    { id: 'AR-F', name: 'La Rioja', flag: '🇦🇷', category: 'Provincia Argentina' },
+    { id: 'AR-M', name: 'Mendoza', flag: '🇦🇷', category: 'Provincia Argentina' },
+    { id: 'AR-N', name: 'Misiones', flag: '🇦🇷', category: 'Provincia Argentina' },
+    { id: 'AR-Q', name: 'Neuquén', flag: '🇦🇷', category: 'Provincia Argentina' },
+    { id: 'AR-R', name: 'Río Negro', flag: '🇦🇷', category: 'Provincia Argentina' },
+    { id: 'AR-A', name: 'Salta', flag: '🇦🇷', category: 'Provincia Argentina' },
+    { id: 'AR-J', name: 'San Juan', flag: '🇦🇷', category: 'Provincia Argentina' },
+    { id: 'AR-D', name: 'San Luis', flag: '🇦🇷', category: 'Provincia Argentina' },
+    { id: 'AR-Z', name: 'Santa Cruz', flag: '🇦🇷', category: 'Provincia Argentina' },
+    { id: 'AR-S', name: 'Santa Fe', flag: '🇦🇷', category: 'Provincia Argentina' },
+    { id: 'AR-G', name: 'Santiago del Estero', flag: '🇦🇷', category: 'Provincia Argentina' },
+    { id: 'AR-V', name: 'Tierra del Fuego', flag: '🇦🇷', category: 'Provincia Argentina' },
+    { id: 'AR-T', name: 'Tucumán', flag: '🇦🇷', category: 'Provincia Argentina' }
+  ].sort((a, b) => a.name.localeCompare(b.name, 'es', { sensitivity: 'base' })), []); // Orden alfabético estricto A-Z
 
-    // Validamos que el correo y la contraseña coincidan exactamente con las credenciales requeridas
-    if (emailInput !== 'magritted12@gmail.com' || passwordInput !== 'omarMagritted!') {
-      setLoginError('Credenciales incorrectas. Verifique el correo o contraseña de administrador.'); // Error de credenciales inválidas
-      return;
-    }
+  // FILTRADO DE RESULTADOS DE PAÍSES SEGÚN EL TEXTO INGRESADO
+  const filteredCountries = useMemo(() => { // Filtra países según la consulta
+    if (!subSearch && !assistedSearch) return globalCountriesCatalog; // Devuelve todos si no hay filtro
+    const term = (subSearch || assistedSearch).toLowerCase().trim(); // Normaliza el término de búsqueda
+    return globalCountriesCatalog.filter(c => // Filtra coincidencias
+      c.name.toLowerCase().includes(term) || c.id.toLowerCase().includes(term) // Compara por nombre o ID
+    ); // Fin de filter
+  }, [subSearch, assistedSearch, globalCountriesCatalog]); // Dependencias del memo
 
-    // Si las credenciales son correctas, limpiamos errores e iniciamos sesión como Admin
-    setLoginError(null);
-    if (onSelectRole) onSelectRole('admin');
-    onLogin(rememberMe);
-    setShowProfileMenu(false);
-  };
+  // FILTRADO DE RESULTADOS DE PROVINCIAS SEGÚN EL TEXTO INGRESADO
+  const filteredProvinces = useMemo(() => { // Filtra provincias según la consulta
+    if (!subSearch && !assistedSearch) return globalProvincesCatalog; // Devuelve todas si no hay filtro
+    const term = (subSearch || assistedSearch).toLowerCase().trim(); // Normaliza el término
+    return globalProvincesCatalog.filter(p => // Filtra coincidencias
+      p.name.toLowerCase().includes(term) || p.id.toLowerCase().includes(term) // Compara por nombre o ID
+    ); // Fin de filter
+  }, [subSearch, assistedSearch, globalProvincesCatalog]); // Dependencias del memo
 
-  // Simulación de Google Sign-In con feedback visual
-  const handleGoogleLogin = () => {
-    setLoginError(null);
-    const mockEmail = 'magritted12@gmail.com';
-    setEmailInput(mockEmail);
-    if (onSelectRole) onSelectRole('admin');
-    onLogin(rememberMe);
-    setShowProfileMenu(false);
-  };
+  // ALTERNAR EL ESTADO COLAPSABLE DE UNA SECCIÓN DEL ACORDEÓN
+  const toggleSubListSection = (sectionKey: string) => { // Función para abrir/cerrar acordeón
+    setCollapsedSections(prev => ({ ...prev, [sectionKey]: !prev[sectionKey] })); // Invierte el estado booleano de la clave
+  }; // Fin de toggleSubListSection
 
-  // Determina la etiqueta amigable del rol actual
-  const roleLabel = userRole === 'admin' ? 'SUPER ADMIN' : userRole === 'pro' ? 'USUARIO PRO' : 'INVITADO';
-  const roleBadgeColor = userRole === 'admin' ? 'text-emerald-400 border-emerald-500/50' : userRole === 'pro' ? 'text-amber-400 border-amber-500/50' : 'text-slate-400 border-slate-800';
+  // MANEJADOR DE EXPORTACIÓN DE REPORTES (PDF Y EXCEL)
+  const handleExport = (type: 'PDF' | 'Excel') => { // Inicia la exportación
+    setExporting(type); // Establece el formato en progreso
+    setTimeout(() => { // Simula proceso asíncrono
+      setExporting(null); // Resetea el estado
+      alert(`Éxito: Reporte exportado a formato ${type} correctamente.`); // Muestra notificación de éxito
+    }, 1500); // 1.5 segundos de retraso
+  }; // Fin de handleExport
 
-  return (
+  // MANEJADOR DE INICIO DE SESIÓN MANUAL CON CREDENCIALES
+  const handleManualLogin = (e: React.FormEvent) => { // Procesa el formulario de acceso
+    e.preventDefault(); // Evita recarga por defecto
+    if (!emailInput || !passwordInput) { // Valida campos incompletos
+      setLoginError('Por favor completa todos los campos.'); // Muestra error
+      return; // Detiene
+    } // Fin de validación
+    if (emailInput !== 'magritted12@gmail.com' || passwordInput !== 'omarMagritted!') { // Valida credenciales
+      setLoginError('Credenciales incorrectas. Verifique el correo o contraseña de administrador.'); // Error
+      return; // Detiene
+    } // Fin de validación
+    setLoginError(null); // Limpia errores
+    if (onSelectRole) onSelectRole('admin'); // Asigna el rol de administrador
+    onLogin(rememberMe); // Inicia sesión
+    setShowProfileMenu(false); // Cierra el menú de perfil
+  }; // Fin de handleManualLogin
+
+  // MANEJADOR DE INICIO DE SESIÓN SIMULADO CON GOOGLE
+  const handleGoogleLogin = () => { // Acceso rápido con Google
+    setLoginError(null); // Limpia errores
+    setEmailInput('magritted12@gmail.com'); // Asigna el correo de admin
+    if (onSelectRole) onSelectRole('admin'); // Asigna rol admin
+    onLogin(rememberMe); // Inicia sesión
+    setShowProfileMenu(false); // Cierra menú
+  }; // Fin de handleGoogleLogin
+
+  // ETIQUETA AMIGABLE Y ESTILO VISUAL SEGÚN EL ROL RBAC ACTUAL
+  const roleLabel = userRole === 'admin' ? 'SUPER ADMIN' : userRole === 'pro' ? 'USUARIO PRO' : 'INVITADO'; // Texto del rol
+  const roleBadgeColor = userRole === 'admin' ? 'text-emerald-400 border-emerald-500/50' : userRole === 'pro' ? 'text-amber-400 border-amber-500/50' : 'text-slate-400 border-slate-800'; // Clases de color
+
+  return ( // Renderizado del JSX del componente Header
     <header id="app-header" className="bg-slate-950/70 backdrop-blur-md border-b border-slate-800 py-3 px-6 flex flex-col md:flex-row md:items-center justify-between gap-4 sticky top-0 z-50">
-      {/* Emblema patrio y Metadatos de Marca */}
+      
+      {/* SECCIÓN 1: EMBLEMA PATRIO Y NOMBRE DE MARCA */}
       <div className="flex items-center space-x-3">
         <div id="argentina-flag-emblem" className="w-10 h-7 rounded bg-sky-600/10 p-0.5 flex flex-col justify-between overflow-hidden shadow-xs border border-slate-800">
           <div className="bg-sky-500/50 h-2 w-full" />
@@ -128,7 +245,95 @@ export default function Header({
         </div>
       </div>
 
-      {/* Selector Dinámico de Ruta e Índice de Selección Territorial */}
+      {/* SECCIÓN 2: BARRA DE GESTIÓN DEL CICLO DE VIDA DEL PROYECTO (PROJECT LIFECYCLE MANAGEMENT) */}
+      <div className="flex flex-wrap items-center gap-2 bg-slate-900/90 p-1.5 rounded-2xl border border-slate-800 shadow-inner">
+        
+        {/* Campo editable para el Nombre del Proyecto e Indicador de Cambios sin Guardar (Dirty Badge) */}
+        <div className="flex items-center space-x-2 bg-slate-950/80 border border-slate-800 focus-within:border-sky-500/80 rounded-xl px-2.5 py-1 transition-all">
+          <FileText size={14} className="text-sky-400 shrink-0" />
+          <div className="flex items-center space-x-1">
+            <input
+              type="text"
+              value={projectName}
+              onChange={(e) => onProjectNameChange && onProjectNameChange(e.target.value)}
+              placeholder="Nombre del Proyecto..."
+              className="bg-transparent text-xs font-black text-slate-100 outline-hidden w-32 md:w-44 placeholder:text-slate-500 tracking-wide"
+              title="Haz clic para cambiar el nombre del proyecto activo en caliente"
+            />
+            {/* Indicador visual animado si existen cambios sin guardar en el proyecto (Punto rojo parpadeante) */}
+            {isDirty && (
+              <span 
+                className="flex items-center justify-center w-2.5 h-2.5 rounded-full bg-rose-500 animate-pulse shadow-[0_0_8px_rgba(244,63,94,0.9)]" 
+                title="Cambios sin guardar en el proyecto (*)"
+              />
+            )}
+          </div>
+        </div>
+
+        {/* Grupo de Acciones Directas del Proyecto: Nuevo, Abrir, Guardar (In-Place), Guardar Como y Cerrar */}
+        <div className="flex items-center space-x-1">
+          {/* Botón 📄 Nuevo Proyecto */}
+          <button
+            type="button"
+            onClick={onNewProject}
+            className="px-2.5 py-1 bg-slate-800 hover:bg-slate-700 text-slate-200 rounded-xl text-[11px] font-bold transition-all cursor-pointer flex items-center space-x-1 border border-slate-700/80"
+            title="Inicializar un lienzo limpio para un nuevo proyecto (📄)"
+          >
+            <FilePlus size={13} className="text-emerald-400" />
+            <span className="hidden sm:inline">Nuevo</span>
+          </button>
+
+          {/* Botón 📂 Abrir Proyecto */}
+          <button
+            type="button"
+            onClick={onOpenProject}
+            className="px-2.5 py-1 bg-slate-800 hover:bg-slate-700 text-slate-200 rounded-xl text-[11px] font-bold transition-all cursor-pointer flex items-center space-x-1 border border-slate-700/80"
+            title="Abrir un archivo .json de proyecto local desde tu computadora (📂)"
+          >
+            <FolderOpen size={13} className="text-amber-400" />
+            <span className="hidden sm:inline">Abrir</span>
+          </button>
+
+          {/* Botón 💾 Guardar Proyecto (Sobreescritura directa In-Place en disco sin diálogos de selección) */}
+          <button
+            type="button"
+            onClick={onSaveProject}
+            className={`px-3 py-1 rounded-xl text-[11px] font-black transition-all cursor-pointer flex items-center space-x-1 border ${
+              isDirty 
+                ? 'bg-emerald-500 hover:bg-emerald-400 text-slate-950 border-emerald-400 shadow-md shadow-emerald-950/50 animate-pulse' 
+                : 'bg-slate-800 hover:bg-slate-700 text-slate-200 border-slate-700/80'
+            }`}
+            title="Guardar los cambios sobreescribiendo directamente el archivo .json activo en disco (💾)"
+          >
+            <Save size={13} className={isDirty ? 'text-slate-950' : 'text-sky-400'} />
+            <span className="hidden sm:inline">Guardar</span>
+          </button>
+
+          {/* Botón 📥 Guardar Como... (Seleccionar nueva ubicación o descargar archivo nuevo) */}
+          <button
+            type="button"
+            onClick={onSaveAsProject}
+            className="px-2.5 py-1 bg-slate-800 hover:bg-slate-700 text-slate-200 rounded-xl text-[11px] font-bold transition-all cursor-pointer flex items-center space-x-1 border border-slate-700/80"
+            title="Guardar como un nuevo archivo .json con otro nombre o en otra ubicación (📥)"
+          >
+            <Download size={13} className="text-purple-400" />
+            <span className="hidden sm:inline">Guardar Como...</span>
+          </button>
+
+          {/* Botón ❌ Cerrar Proyecto */}
+          <button
+            type="button"
+            onClick={onCloseProject}
+            className="px-2.5 py-1 bg-slate-800 hover:bg-rose-950/80 text-rose-300 hover:text-rose-200 rounded-xl text-[11px] font-bold transition-all cursor-pointer flex items-center space-x-1 border border-slate-700/80 hover:border-rose-800/80"
+            title="Cerrar el proyecto activo y desvincular el archivo de disco (❌)"
+          >
+            <XCircle size={13} className="text-rose-400" />
+            <span className="hidden sm:inline">Cerrar</span>
+          </button>
+        </div>
+      </div>
+
+      {/* SECCIÓN 3: SELECTOR DINÁMICO DE RUTA E ÍNDICE DE SELECCIÓN TERRITORIAL */}
       <div className="relative flex-1 max-w-md mx-2">
         <button
           onClick={() => setShowSelectionMenu(!showSelectionMenu)}
@@ -159,7 +364,7 @@ export default function Header({
         {/* MENÚ DESPLEGABLE FLOTANTE: ÍNDICE DE SELECCIÓN Y SUBDIVISIONES */}
         {showSelectionMenu && (
           <div className="absolute left-0 right-0 mt-2 bg-slate-900 border border-slate-800 rounded-2xl shadow-2xl p-4 z-50 text-slate-200 space-y-3 min-w-[320px]">
-            {/* Header del desplegable */}
+            {/* Encabezado del desplegable */}
             <div className="flex items-center justify-between border-b border-slate-800 pb-2.5">
               <div className="flex items-center space-x-2">
                 <Compass size={16} className="text-emerald-400" />
@@ -174,13 +379,13 @@ export default function Header({
               </div>
               <button
                 onClick={() => setShowSelectionMenu(false)}
-                className="text-slate-500 hover:text-slate-300 text-xs font-bold px-1.5 py-0.5 rounded bg-slate-950 border border-slate-800"
+                className="text-slate-500 hover:text-slate-300 text-xs font-bold px-1.5 py-0.5 rounded bg-slate-950 border border-slate-800 cursor-pointer"
               >
                 ✕
               </button>
             </div>
 
-            {/* Eslabones de la Ruta Actual */}
+            {/* Eslabones de la Ruta Actual (Breadcrumb Trail en desplegable) */}
             {navigationPath && navigationPath.length > 0 && (
               <div className="bg-slate-950 p-2.5 rounded-xl border border-slate-800 space-y-1.5">
                 <span className="text-[9px] font-black uppercase tracking-widest text-slate-500 block">
@@ -212,76 +417,155 @@ export default function Header({
               </div>
             )}
 
-            {/* Buscador y Lista de Subdivisiones o Estado Vacío Informativo (FASE 2) */}
-            {subdivisions.length > 0 ? (
-              <div className="space-y-2">
-                <div className="flex items-center justify-between">
-                  <span className="text-[9px] font-black uppercase tracking-widest text-slate-400 flex items-center space-x-1">
-                    <Layers size={10} className="text-emerald-400" />
-                    <span>Subdivisiones Disponibles ({subdivisions.length}):</span>
-                  </span>
-                </div>
+            {/* BUSCADOR ASISTIDO TIPO GOOGLE Y SUB-LISTAS COLAPSABLES DEL ACORDEÓN */}
+            <div className="space-y-3 pt-1">
+              {/* Buscador Asistido estilo Google */}
+              <div className="relative flex items-center">
+                <Search size={14} className="absolute left-3 text-emerald-400" />
+                <input
+                  type="text"
+                  value={subSearch}
+                  onChange={(e) => setSubSearch(e.target.value)}
+                  placeholder="🔍 Buscador asistido Google: escribe un país o provincia..."
+                  className="w-full bg-slate-950 border border-slate-700 focus:border-emerald-400 rounded-xl py-1.5 pl-9 pr-8 text-xs text-slate-100 placeholder:text-slate-500 outline-hidden transition-all shadow-inner"
+                />
+                {subSearch && (
+                  <button
+                    onClick={() => setSubSearch('')}
+                    className="absolute right-2.5 text-slate-500 hover:text-slate-300 text-xs font-bold cursor-pointer"
+                  >
+                    ✕
+                  </button>
+                )}
+              </div>
 
-                <div className="relative flex items-center">
-                  <Search size={12} className="absolute left-2.5 text-slate-500" />
-                  <input
-                    type="text"
-                    value={subSearch}
-                    onChange={(e) => setSubSearch(e.target.value)}
-                    placeholder="Buscar provincia o municipio..."
-                    className="w-full bg-slate-950 border border-slate-800 focus:border-emerald-500 rounded-xl py-1 pl-7 pr-3 text-[11px] text-slate-200 outline-hidden transition-colors"
-                  />
-                </div>
-
-                {/* Lista de Subdivisiones en Grid Scrolleable */}
-                <div className="max-h-56 overflow-y-auto pr-1 grid grid-cols-2 gap-1.5 scrollbar-thin scrollbar-thumb-slate-800">
-                  {filteredSubdivisions.length > 0 ? (
-                    filteredSubdivisions.map((sub) => (
-                      <button
-                        key={sub.id}
-                        onClick={() => {
-                          if (onSelectSubdivision) onSelectSubdivision(sub.id);
-                          setShowSelectionMenu(false);
-                        }}
-                        className="p-2 bg-slate-950 hover:bg-emerald-600/20 border border-slate-800 hover:border-emerald-500/50 rounded-xl text-left transition-all cursor-pointer group flex items-center justify-between"
-                      >
-                        <span className="text-[11px] font-bold text-slate-300 group-hover:text-emerald-300 truncate">
-                          {sub.name}
-                        </span>
-                        {sub.value !== undefined && (
-                          <span className="text-[9px] font-mono text-slate-500 group-hover:text-emerald-400 font-bold shrink-0 ml-1">
-                            {sub.value}%
-                          </span>
-                        )}
-                      </button>
-                    ))
-                  ) : (
-                    <div className="col-span-2 py-4 text-center text-xs text-slate-500">
-                      No se encontraron subdivisiones.
+              <div className="max-h-72 overflow-y-auto space-y-2 pr-1 scrollbar-thin scrollbar-thumb-slate-800">
+                
+                {/* SUB-LISTA 1: PAÍSES Y NIVELES MACRO (ACORDEÓN PLEGABLE) */}
+                <div className="bg-slate-950 border border-slate-800 rounded-xl overflow-hidden">
+                  <button
+                    onClick={() => toggleSubListSection('paises')}
+                    className="w-full bg-slate-900/80 hover:bg-slate-900 px-3 py-2 flex items-center justify-between text-left text-xs font-bold text-slate-200 transition-colors border-b border-slate-800 cursor-pointer"
+                  >
+                    <span className="flex items-center space-x-1.5 text-emerald-400">
+                      <Globe size={13} />
+                      <span className="uppercase text-[10px] tracking-wider font-extrabold text-slate-200">1. Países / Niveles Macro ({filteredCountries.length})</span>
+                    </span>
+                    <ChevronDown size={14} className={`text-slate-400 transition-transform duration-200 ${collapsedSections.paises ? 'rotate-180' : ''}`} />
+                  </button>
+                  
+                  {!collapsedSections.paises && (
+                    <div className="p-2 grid grid-cols-1 sm:grid-cols-2 gap-1.5 bg-slate-950/60">
+                      {filteredCountries.map((country) => (
+                        <button
+                          key={country.id}
+                          onClick={() => {
+                            if (onSelectSubdivision) onSelectSubdivision(country.id);
+                            setShowSelectionMenu(false);
+                          }}
+                          className="p-2 bg-slate-900 hover:bg-emerald-600/20 border border-slate-800 hover:border-emerald-500/50 rounded-lg text-left transition-all cursor-pointer flex items-center space-x-2 group"
+                        >
+                          <span className="text-sm">{country.flag}</span>
+                          <div className="truncate">
+                            <span className="text-xs font-bold text-slate-200 group-hover:text-emerald-300 block truncate">
+                              {country.name}
+                            </span>
+                            <span className="text-[9px] text-slate-500 block font-mono">{country.category}</span>
+                          </div>
+                        </button>
+                      ))}
                     </div>
                   )}
                 </div>
+
+                {/* SUB-LISTA 2: PROVINCIAS DE ARGENTINA (24 EN ORDEN ALFABÉTICO A-Z) */}
+                <div className="bg-slate-950 border border-slate-800 rounded-xl overflow-hidden">
+                  <button
+                    onClick={() => toggleSubListSection('provincias')}
+                    className="w-full bg-slate-900/80 hover:bg-slate-900 px-3 py-2 flex items-center justify-between text-left text-xs font-bold text-slate-200 transition-colors border-b border-slate-800 cursor-pointer"
+                  >
+                    <span className="flex items-center space-x-1.5 text-emerald-400">
+                      <MapPin size={13} />
+                      <span className="uppercase text-[10px] tracking-wider font-extrabold text-slate-200">2. Provincias de Argentina ({filteredProvinces.length})</span>
+                    </span>
+                    <ChevronDown size={14} className={`text-slate-400 transition-transform duration-200 ${collapsedSections.provincias ? 'rotate-180' : ''}`} />
+                  </button>
+
+                  {!collapsedSections.provincias && (
+                    <div className="p-2 grid grid-cols-2 gap-1.5 bg-slate-950/60">
+                      {filteredProvinces.map((prov) => (
+                        <button
+                          key={prov.id}
+                          onClick={() => {
+                            if (onSelectSubdivision) onSelectSubdivision(prov.id);
+                            setShowSelectionMenu(false);
+                          }}
+                          className="p-1.5 bg-slate-900 hover:bg-emerald-600/20 border border-slate-800 hover:border-emerald-500/50 rounded-lg text-left transition-all cursor-pointer flex items-center justify-between group"
+                        >
+                          <span className="text-[11px] font-bold text-slate-300 group-hover:text-emerald-300 truncate">
+                            {prov.name}
+                          </span>
+                          <span className="text-[9px] text-slate-500 font-mono font-bold shrink-0 ml-1">
+                            {prov.id}
+                          </span>
+                        </button>
+                      ))}
+                    </div>
+                  )}
+                </div>
+
+                {/* SUB-LISTA 3: SUBDIVISIONES LOCALES O MUNICIPIOS DEL NODO ACTIVO */}
+                {subdivisions.length > 0 && (
+                  <div className="bg-slate-950 border border-slate-800 rounded-xl overflow-hidden">
+                    <button
+                      onClick={() => toggleSubListSection('subdivisiones')}
+                      className="w-full bg-slate-900/80 hover:bg-slate-900 px-3 py-2 flex items-center justify-between text-left text-xs font-bold text-slate-200 transition-colors border-b border-slate-800 cursor-pointer"
+                    >
+                      <span className="flex items-center space-x-1.5 text-emerald-400">
+                        <Layers size={13} />
+                        <span className="uppercase text-[10px] tracking-wider font-extrabold text-slate-200">3. Subdivisiones Locales ({subdivisions.length})</span>
+                      </span>
+                      <ChevronDown size={14} className={`text-slate-400 transition-transform duration-200 ${collapsedSections.subdivisiones ? 'rotate-180' : ''}`} />
+                    </button>
+
+                    {!collapsedSections.subdivisiones && (
+                      <div className="p-2 grid grid-cols-2 gap-1.5 bg-slate-950/60">
+                        {subdivisions
+                          .filter(sub => !subSearch || sub.name.toLowerCase().includes(subSearch.toLowerCase()) || sub.id.toLowerCase().includes(subSearch.toLowerCase()))
+                          .map((sub) => (
+                            <button
+                              key={sub.id}
+                              onClick={() => {
+                                if (onSelectSubdivision) onSelectSubdivision(sub.id);
+                                setShowSelectionMenu(false);
+                              }}
+                              className="p-2 bg-slate-900 hover:bg-emerald-600/20 border border-slate-800 hover:border-emerald-500/50 rounded-xl text-left transition-all cursor-pointer group flex items-center justify-between"
+                            >
+                              <span className="text-[11px] font-bold text-slate-300 group-hover:text-emerald-300 truncate">
+                                {sub.name}
+                              </span>
+                              {sub.value !== undefined && (
+                                <span className="text-[9px] font-mono text-slate-500 group-hover:text-emerald-400 font-bold shrink-0 ml-1">
+                                  {sub.value}%
+                                </span>
+                              )}
+                            </button>
+                          ))}
+                      </div>
+                    )}
+                  </div>
+                )}
+
               </div>
-            ) : (
-              /* FASE 2: OPCIÓN DESHABILITADA INFORMATIVA CUANDO EL NODO ESTÁ VACÍO */
-              <div className="p-3 bg-slate-950/80 border border-dashed border-slate-800 rounded-xl text-center space-y-1">
-                <span className="text-[11px] font-bold text-slate-400 block flex items-center justify-center gap-1">
-                  <Layers size={12} className="text-slate-500" />
-                  <span>Sin subdivisiones</span>
-                </span>
-                <p className="text-[10px] text-slate-500 leading-tight">
-                  No hay regiones secundarias cargadas en este nodo. Usa las migas de pan superiores para retroceder.
-                </p>
-              </div>
-            )}
+            </div>
           </div>
         )}
       </div>
 
-      {/* Botonera de Operaciones y Perfil de Usuario */}
+      {/* SECCIÓN 4: BOTONERA DE EXPORTACIÓN Y PERFIL DE USUARIO RBAC */}
       <div className="flex items-center justify-end space-x-3 relative">
         
-        {/* Exportar a PDF */}
+        {/* Exportar Reporte a PDF */}
         <button
           onClick={() => handleExport('PDF')}
           disabled={exporting !== null}
@@ -291,7 +575,7 @@ export default function Header({
           <span>{exporting === 'PDF' ? 'Generando...' : 'EXPORTAR PDF'}</span>
         </button>
 
-        {/* Generar archivo Excel */}
+        {/* Generar Reporte a Excel */}
         <button
           onClick={() => handleExport('Excel')}
           disabled={exporting !== null}
@@ -301,10 +585,10 @@ export default function Header({
           <span>{exporting === 'Excel' ? 'Generando...' : 'GENERAR EXCEL'}</span>
         </button>
 
-        {/* Separador visual elegante */}
+        {/* Separador visual de línea vertical */}
         <div className="w-px h-6 bg-slate-800 mx-1" />
 
-        {/* CONTROL DE PERFIL / INICIO DE SESIÓN Y ROL RBAC */}
+        {/* CONTROL DE PERFIL / INICIO DE SESIÓN Y ASIGNACIÓN DE ROL RBAC */}
         <div className="relative">
           <button 
             onClick={() => setShowProfileMenu(!showProfileMenu)}
@@ -324,7 +608,7 @@ export default function Header({
             <ChevronDown size={12} className="text-slate-500" />
           </button>
 
-          {/* MENÚ DESPLEGABLE / SELECTOR DE ROLES RBAC Y PERFIL PERSONAL */}
+          {/* MENÚ DESPLEGABLE DE PERFIL Y CONTROL DE ACCESO RBAC */}
           {showProfileMenu && (
             <div className="absolute right-0 mt-3 w-80 bg-slate-900 border border-slate-800 rounded-2xl shadow-2xl p-5 z-50 text-slate-200 space-y-4">
               <div className="flex items-center space-x-2.5 border-b border-slate-800 pb-3">
@@ -335,11 +619,11 @@ export default function Header({
                 </div>
               </div>
 
-              {/* SECCIÓN DE DATOS PERSONALES DEL USUARIO ACTIVO Y BOTÓN EDITAR */}
+              {/* SECCIÓN DE DATOS PERSONALES DEL USUARIO AUTENTICADO */}
               {currentUser && (
                 <div className="bg-slate-950 p-3.5 rounded-xl border border-slate-800 space-y-2.5">
                   <div className="flex items-center space-x-3">
-                    {/* Avatar o Ícono del Usuario */}
+                    {/* Avatar o ícono del perfil */}
                     <div className="w-10 h-10 rounded-xl bg-slate-900 border border-emerald-500/40 p-0.5 flex items-center justify-center shrink-0 overflow-hidden">
                       {currentUser.avatarUrl ? (
                         <img referrerPolicy="no-referrer" src={currentUser.avatarUrl} alt={currentUser.name} className="w-full h-full object-cover rounded-lg" />
@@ -385,7 +669,7 @@ export default function Header({
                 </div>
               )}
 
-              {/* Selector Rápido de Rol RBAC */}
+              {/* Selector Rápido de Rol RBAC para pruebas de la plataforma */}
               <div className="space-y-2 bg-slate-950 p-3 rounded-xl border border-slate-800">
                 <label className="text-[9px] font-black uppercase tracking-widest text-slate-400 block">
                   Simular / Asignar Rol Activo:
@@ -436,7 +720,7 @@ export default function Header({
                 </div>
               </div>
 
-              {/* Formulario de Login si se quiere acceder con credenciales */}
+              {/* Formulario de Inicio de Sesión si el rol actual es Guest */}
               {userRole === 'guest' && (
                 <form onSubmit={handleManualLogin} className="space-y-3 pt-2 border-t border-slate-800">
                   {loginError && (
@@ -483,6 +767,7 @@ export default function Header({
                 </form>
               )}
 
+              {/* Botón de Cerrar Sesión si no es usuario Guest */}
               {userRole !== 'guest' && (
                 <button
                   onClick={() => {
@@ -501,7 +786,7 @@ export default function Header({
         </div>
       </div>
 
-      {/* BARRA GLOBAL FIJA DE MIGAS DE PAN (BREADCRUMBS): MUNDO > CONTINENTE > PAÍS > PROVINCIA > MUNICIPIO */}
+      {/* SECCIÓN 5: BARRA GLOBAL FIJA DE MIGAS DE PAN (BREADCRUMBS) */}
       {navigationPath && navigationPath.length > 0 && (
         <nav id="global-breadcrumbs-bar" className="w-full bg-slate-900/90 border-t border-slate-800/80 pt-2 pb-0.5 px-2 flex items-center space-x-1.5 text-xs overflow-x-auto select-none">
           <span className="text-[10px] font-black uppercase text-slate-500 tracking-wider flex items-center space-x-1 mr-1 shrink-0">
@@ -530,7 +815,5 @@ export default function Header({
         </nav>
       )}
     </header>
-  );
-}
-
-
+  ); // Fin del return de JSX
+} // Fin de la función exportable Header

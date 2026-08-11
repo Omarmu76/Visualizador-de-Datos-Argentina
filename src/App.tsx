@@ -17,11 +17,15 @@ import ProtectedRoute from './components/ProtectedRoute'; // Componente envoltur
 import PropertyEditor, { EditableTerritory } from './components/PropertyEditor'; // Componente inspector visual estilo Figma
 import AdminHierarchyTreeEditor from './components/AdminHierarchyTreeEditor'; // Componente del organizador y árbol jerárquico Drag and Drop
 import AdminUserManagement from './components/AdminUserManagement'; // Componente de gestión de usuarios y perfiles para administradores
+import AdminHelpGuide from './components/AdminHelpGuide'; // Componente de la Guía de Ayuda, Convenciones y Tutorial de Uso
 import UserProfileModal from './components/UserProfileModal'; // Componente modal para edición de perfil personal
 import { mockProvincesData } from './data/mockData'; // Diccionario con los datos geográficos e indicadores iniciales de Argentina
+import { provincePaths } from './data/provincePaths'; // Moldes nativos vectoriales de las 24 provincias de la República Argentina
 import { MetricType, ProvinceData, RegionNode, NavNode, UserRole, UserProfile, TreeNode } from './types'; // Tipos e interfaces de TypeScript
 import { safeSetItem, safeGetItem, safeRemoveItem } from './lib/storage'; // Funciones auxiliares para almacenamiento local seguro
 import { fetchAllGeoNodes } from './lib/dbService'; // Importa la consulta a la base de datos real (Cloud SQL / Drizzle)
+import { useProjectManager } from './hooks/useProjectManager'; // Hook de ciclo de vida de proyectos y File System Access API
+import { getPathBBox, fitPathToBBox } from './lib/mapUtils'; // Utilidades geométricas vectoriales para cálculo de bounding box y escalado espacial exacto
 
 // Objeto con la configuración inicial y predeterminada de perfiles de usuario por defecto
 const DEFAULT_USER_PROFILES: Record<string, UserProfile> = {
@@ -96,7 +100,17 @@ const defaultWorldMapData: ProvinceData = { // Definición de datos por defecto 
     educationInvestment: [{ label: 'Promedio', value: 4.5 }] // Inversión en educación respecto al PIB
   }, // Fin de presupuesto
   mobilityServices: { roadNetwork: 'Red Vial Global', waterAccess: 88, publicTransportLines: 1250 }, // Servicios públicos de transporte y agua
-  municipalities: [] // Lista de divisiones o países
+  municipalities: [ // Colección de países de la Tierra para la vista de nivel Mundo
+    { id: 'country', name: 'República Argentina', value: 41.7, percentage: 10, color: '#10b981' },
+    { id: 'BR', name: 'Brasil', value: 24.3, percentage: 48, color: '#059669' },
+    { id: 'CL', name: 'Chile', value: 10.8, percentage: 8, color: '#3b82f6' },
+    { id: 'UY', name: 'Uruguay', value: 9.9, percentage: 4, color: '#0284c7' },
+    { id: 'CO', name: 'Colombia', value: 36.6, percentage: 12, color: '#f59e0b' },
+    { id: 'PE', name: 'Perú', value: 27.5, percentage: 11, color: '#eab308' },
+    { id: 'MX', name: 'México', value: 36.3, percentage: 18, color: '#ec4899' },
+    { id: 'ES', name: 'España', value: 20.4, percentage: 5, color: '#8b5cf6' },
+    { id: 'US', name: 'Estados Unidos', value: 11.5, percentage: 35, color: '#6366f1' }
+  ] // Fin de la lista de países para el nivel Mundo
 }; // Fin de defaultWorldMapData
 
 // Objeto de configuración predeterminado con los indicadores continentales para el nivel América del Sur
@@ -132,7 +146,16 @@ const defaultContinentMapData: ProvinceData = { // Definición de datos por defe
     educationInvestment: [{ label: 'Promedio', value: 3.8 }] // Inversión educativa porcentual
   }, // Fin de presupuesto
   mobilityServices: { roadNetwork: 'Vía Panamericana', waterAccess: 76, publicTransportLines: 480 }, // Infraestructura básica
-  municipalities: [] // Lista de países
+  municipalities: [ // Colección de países de América del Sur
+    { id: 'country', name: 'República Argentina', value: 41.7, percentage: 22, color: '#10b981' },
+    { id: 'BR', name: 'Brasil', value: 24.3, percentage: 48, color: '#059669' },
+    { id: 'CL', name: 'Chile', value: 10.8, percentage: 8, color: '#3b82f6' },
+    { id: 'UY', name: 'Uruguay', value: 9.9, percentage: 4, color: '#0284c7' },
+    { id: 'CO', name: 'Colombia', value: 36.6, percentage: 12, color: '#f59e0b' },
+    { id: 'PE', name: 'Perú', value: 27.5, percentage: 11, color: '#eab308' },
+    { id: 'PY', name: 'Paraguay', value: 24.7, percentage: 5, color: '#14b8a6' },
+    { id: 'BO', name: 'Bolivia', value: 36.4, percentage: 6, color: '#84cc16' }
+  ] // Fin de la lista de países para América del Sur
 }; // Fin de defaultContinentMapData
 
 // Objeto de configuración predeterminado con los indicadores nacionales macro para la República Argentina
@@ -172,7 +195,8 @@ const defaultCountryMapData: ProvinceData = { // Definición de datos por defect
     id: p.id, // ID de la provincia
     name: p.name, // Nombre de la provincia
     value: p.socialEmployment?.pobreza || 40, // Métrica de pobreza provincial
-    percentage: Math.round(p.socialEmployment?.pobreza || 40) // Porcentaje
+    percentage: Math.round(p.socialEmployment?.pobreza || 40), // Porcentaje
+    d: provincePaths.find(pp => pp.id === p.id)?.d || '' // Geometría SVG nativa de la provincia
   })) // Fin de la asignación de municipios
 }; // Fin de defaultCountryMapData
 
@@ -262,6 +286,49 @@ function AppContent() { // Componente que maneja el estado global y las rutas de
     }); // Fin de setUserProfiles
   }; // Fin de handleSaveProfile
 
+  // ESTADO PARA EL ANCHO DEL PANEL IZQUIERDO (PORCENTAJE EN SPLITTER REDIMENSIONABLE)
+  const [leftPanelWidthPercent, setLeftPanelWidthPercent] = useState<number>(() => {
+    const savedWidth = safeGetItem('argentina_left_panel_width'); // Recupera el ancho guardado si existe
+    return savedWidth ? Math.min(Math.max(Number(savedWidth), 18), 82) : 42; // Ancho por defecto 42%
+  });
+
+  // ESTADO BOOLEANO QUE INDICA SI EL USUARIO ESTÁ ARRASTRANDO LA LÍNEA REDIMENSIONABLE CENTRAL
+  const [isResizingPanels, setIsResizingPanels] = useState<boolean>(false);
+
+  // EFECTO PARA ESCUCHAR EL MOVIMIENTO Y LIBERACIÓN DEL MOUSE/TOQUE AL REDIMENSIONAR LOS PANELES
+  useEffect(() => {
+    // Manejador del movimiento del puntero cuando se está arrastrando la barra divisoria
+    const handlePointerMove = (e: MouseEvent | TouchEvent) => {
+      if (!isResizingPanels) return; // Si no está activo el modo de arrastre, ignora el movimiento
+      const clientX = 'touches' in e ? e.touches[0].clientX : e.clientX; // Obtiene la coordenada horizontal X
+      const newWidthPercent = (clientX / window.innerWidth) * 100; // Calcula el porcentaje respecto al ancho total
+      const clampedWidth = Math.min(Math.max(newWidthPercent, 18), 82); // Delimita el rango de redimensionamiento entre 18% y 82%
+      setLeftPanelWidthPercent(clampedWidth); // Actualiza el estado con el nuevo porcentaje
+      safeSetItem('argentina_left_panel_width', String(clampedWidth)); // Persiste el ancho en localStorage
+    };
+
+    // Manejador de la finalización del evento de arrastre (al soltar el botón del mouse)
+    const handlePointerUp = () => {
+      if (isResizingPanels) {
+        setIsResizingPanels(false); // Desactiva el estado de arrastre
+      }
+    };
+
+    if (isResizingPanels) {
+      window.addEventListener('mousemove', handlePointerMove); // Añade listener global de movimiento
+      window.addEventListener('mouseup', handlePointerUp); // Añade listener global de soltar mouse
+      window.addEventListener('touchmove', handlePointerMove); // Listener táctil
+      window.addEventListener('touchend', handlePointerUp); // Listener fin táctil
+    }
+
+    return () => { // Limpieza de listeners al desmontar o cambiar estado
+      window.removeEventListener('mousemove', handlePointerMove);
+      window.removeEventListener('mouseup', handlePointerUp);
+      window.removeEventListener('touchmove', handlePointerMove);
+      window.removeEventListener('touchend', handlePointerUp);
+    };
+  }, [isResizingPanels]);
+
   // Función para restablecer todos los perfiles de usuario a los valores iniciales predeterminados
   const handleResetProfiles = () => { // Función de restablecimiento
     setUserProfiles(DEFAULT_USER_PROFILES); // Restablece los perfiles por defecto
@@ -286,11 +353,38 @@ function AppContent() { // Componente que maneja el estado global y las rutas de
     let data = { ...mockProvincesData }; // Clona los datos base de Argentina
     if (saved) { // Si existen datos guardados previa
       try { // Manejo de excepciones
-        data = JSON.parse(saved); // Parsea los datos guardados en JSON
+        const parsed = JSON.parse(saved); // Parsea los datos guardados en JSON
+        if (parsed && typeof parsed === 'object') {
+          data = { ...data, ...parsed };
+        }
       } catch (e) { // Captura posibles errores sintácticos de parseo
         console.error("Error al cargar datos guardados de localStorage:", e); // Imprime el error en la consola
       } // Fin de try-catch
     } // Fin de condicional saved
+
+    // Comprueba si existe una versión del mapa Mundial guardado específicamente en la clave argentina_advanced_canvas_map_WORLD_MAP
+    const savedWorldCanvas = safeGetItem('argentina_advanced_canvas_map_WORLD_MAP');
+    if (savedWorldCanvas) {
+      try {
+        const parsedCanvas = JSON.parse(savedWorldCanvas);
+        if (parsedCanvas && Array.isArray(parsedCanvas.paths) && parsedCanvas.paths.length > 0) {
+          const worldMunis = parsedCanvas.paths.map((p: any) => ({
+            id: p.id,
+            name: p.name,
+            value: p.customData?.valor || p.customData?.value || 30,
+            percentage: p.customData?.porcentaje || p.customData?.percentage || 10,
+            d: p.d,
+            color: p.customData?.fill || p.visualStyles?.fillColor || p.fill || '#10b981'
+          }));
+          data['WORLD_MAP'] = {
+            ...(data['WORLD_MAP'] || defaultWorldMapData),
+            municipalities: worldMunis
+          };
+        }
+      } catch (err) {
+        console.error("Error al restaurar WORLD_MAP guardado en canvas:", err);
+      }
+    }
     
     // Inyección automatizada de las Islas Malvinas (AR-MLV) en alta definición si no están personalizadas
     if (data['AR-MLV'] && (!data['AR-MLV'].municipalities || data['AR-MLV'].municipalities.length === 5)) { // Comprueba Malvinas
@@ -312,10 +406,34 @@ function AppContent() { // Componente que maneja el estado global y las rutas de
     return data; // Retorna la estructura cargada o por defecto
   }); // Fin del hook useState de provincesData
 
+  // FUNCIÓN PARA RESTAURAR UN PROYECTO DESDE UN OBJETO JSON CARGADO
+  const loadProjectFromJSON = (projectData: any) => { // Inyecta la estructura cargada al estado de la app
+    if (!projectData || typeof projectData !== 'object') { // Validación de estructura básica
+      alert('Error: El archivo seleccionado no contiene un formato de proyecto válido.'); // Alerta de error
+      return; // Interrumpe la ejecución
+    } // Fin de validación
+
+    if (projectData.activeMapLevel) setActiveMapLevel(projectData.activeMapLevel); // Restaura el nivel de mapa
+    if (projectData.selectedProvinceId !== undefined) setSelectedProvinceId(projectData.selectedProvinceId); // Restaura la provincia activa
+    if (projectData.selectedMetric) setSelectedMetric(projectData.selectedMetric); // Restaura la métrica activa
+    if (projectData.navPath && Array.isArray(projectData.navPath)) setNavPath(projectData.navPath); // Restaura la ruta de navegación
+    if (projectData.provincesData && typeof projectData.provincesData === 'object') { // Restaura provincias
+      setProvincesData(prev => ({ ...prev, ...projectData.provincesData })); // Fusiona los datos provinciales
+    } // Fin de provincesData
+    if (projectData.appTreeNodes && Array.isArray(projectData.appTreeNodes)) { // Restaura árbol de nodos
+      setAppTreeNodes(projectData.appTreeNodes); // Actualiza el árbol de la BD
+    } // Fin de appTreeNodes
+  }; // Fin de loadProjectFromJSON
+
   // Estado para la provincia seleccionada (null por defecto cuando estamos en un nodo padre como Argentina)
   const [selectedProvinceId, setSelectedProvinceId] = useState<string | null>(null); // Estado para la provincia seleccionada (null por defecto)
   const [selectedMetric, setSelectedMetric] = useState<MetricType>('pobreza'); // Estado para la métrica activa (pobreza, desempleo, etc.)
   const [activeMapLevel, setActiveMapLevel] = useState<string>('country'); // Estado para el nivel de mapa activo ('world' | 'continent' | 'country' | 'province')
+
+  // Estado de historial de ruta dinámico universal para la navegación jerárquica ilimitada (Motor Vectorial)
+  const [navPath, setNavPath] = useState<NavNode[]>([ // Inicializador con el nodo raíz Inicio
+    { id: 'root', name: 'Inicio', type: 'root' } // Nodo raíz universal por defecto
+  ]); // Fin del estado navPath
 
   // Estado para gestionar la lista de niveles jerárquicos configurables
   const [mapLevels, setMapLevels] = useState<{ id: string; name: string }[]>(() => { // Inicializador diferido
@@ -346,20 +464,74 @@ function AppContent() { // Componente que maneja el estado global y las rutas de
     return safeGetItem('argentina_selected_subdivision_id') || null; // Lee la subdivisión o devuelve null
   }); // Fin de useState selectedSubdivisionId
 
-  // Función para seleccionar o deseleccionar una subdivisión geográfica
-  const handleSelectSubdivision = (id: string | null) => { // Manejador de subdivisión
-    setSelectedSubdivisionId(id); // Actualiza la subdivisión
-    if (id) { // Si se proveyó un ID válido
-      safeSetItem('argentina_selected_subdivision_id', id); // Guarda la subdivisión seleccionada
-    } else { // Si se deseleccionó
-      safeRemoveItem('argentina_selected_subdivision_id'); // Remueve la subdivisión del almacenamiento
+  // REGLA DE ORO 1: Separación estricta de Estado
+  // selectedNodeId representa la 'Región que estoy mirando' (Micro Vista) en el DataPanel.
+  // Es independiente de 'currentLevelId' y 'navPath' ('Lugar donde estoy parado').
+  const selectedNodeId = selectedSubdivisionId; // Alias semántico para la región inspeccionada
+
+  // REGLA DE ORO 2 - Clic Simple: Actualiza únicamente 'selectedNodeId' para inspeccionar datos
+  const handleSelectNode = (id: string | null) => { // Manejador de selección de región/nodo
+    setSelectedSubdivisionId(id); // Actualiza la región seleccionada para inspección
+    if (id) { // Si el ID existe
+      safeSetItem('argentina_selected_subdivision_id', id); // Guarda la selección activa
+    } else { // Si la selección es nula
+      safeRemoveItem('argentina_selected_subdivision_id'); // Remueve la clave de selección
     } // Fin del bloque condicional
+  }; // Fin de handleSelectNode
+
+  // REGLA DE ORO 2 - Doble Clic (Drill-Down): Profundiza en un nodo agregándolo a navPath y resetea la selección
+  const handleDrillDown = (node: NavNode) => { // Recibe el nodo al que se le hace doble clic
+    MapsToNode(node); // Modifica navPath y currentLevelId para hacer zoom/navegar al nodo
+    handleSelectNode(null); // Limpia la selección para mostrar la Vista Macro del nuevo nivel
+  }; // Fin de handleDrillDown
+
+  // Función para seleccionar o deseleccionar una subdivisión geográfica (retrocompatibilidad)
+  const handleSelectSubdivision = (id: string | null) => { // Manejador de subdivisión
+    handleSelectNode(id); // Reenvía la llamada a handleSelectNode
   }; // Fin de handleSelectSubdivision
 
-  // Estado de historial de ruta dinámico universal para la navegación jerárquica ilimitada (Motor Vectorial)
-  const [navPath, setNavPath] = useState<NavNode[]>([ // Inicializador con el nodo raíz Inicio
-    { id: 'root', name: 'Inicio', type: 'root' } // Nodo raíz universal por defecto
-  ]); // Fin del estado navPath
+  // INTEGRACIÓN DEL HOOK PERSONALIZADO useProjectManager PARA GESTIÓN DE ARCHIVOS Y DESTELLOS DE SEGURIDAD
+  const {
+    projectName,
+    setProjectName,
+    isDirty,
+    setIsDirty,
+    handleNew: handleNewProject,
+    handleOpen: handleOpenProject,
+    handleSave: handleSaveProject,
+    handleSaveAs: handleSaveAsProject,
+    handleClose: handleCloseProject
+  } = useProjectManager(
+    {
+      projectName: 'Proyecto Sin Título',
+      version: '1.0.0',
+      timestamp: new Date().toISOString(),
+      activeMapLevel,
+      selectedProvinceId,
+      selectedMetric,
+      navPath,
+      provincesData,
+      appTreeNodes
+    },
+    (loadedData: any) => {
+      if (Array.isArray(loadedData) && loadedData.length === 0) { // Si es un reset a lienzo limpio
+        setProvincesData({ ...mockProvincesData }); // Restablece los datos a los valores iniciales de Argentina
+        setActiveMapLevel('country'); // Cambia la vista al nivel país
+        setSelectedProvinceId(null); // Limpia la selección de provincia
+        setSelectedMetric('pobreza'); // Restablece la métrica a pobreza
+        setNavPath([{ id: 'root', name: 'Inicio', type: 'root' }]); // Restablece la ruta raíz
+        setSelectedSubdivisionId(null); // Limpia la subdivisión activa
+      } else {
+        loadProjectFromJSON(loadedData); // Carga la estructura JSON importada
+      }
+    }
+  );
+
+  // MANEJADOR PARA CAMBIAR EL NOMBRE DEL PROYECTO EN CALIENTE
+  const handleProjectNameChange = (newName: string) => { // Recibe el nuevo texto del título del proyecto
+    setProjectName(newName); // Actualiza el estado del nombre
+    setIsDirty(true); // Marca el estado como modificado
+  }; // Fin de handleProjectNameChange
 
   // Cálculo derivado del ID de la entidad territorial activa según el nivel del mapa
   const activeProvinceId = 
@@ -466,8 +638,12 @@ function AppContent() { // Componente que maneja el estado global y las rutas de
       cleanPath.push({ id: 'world', name: 'Mundo', type: 'world' }); // Auto-agrega Mundo
       cleanPath.push({ id: 'continent', name: 'América del Sur', type: 'continent' }); // Agrega Continente
     } 
-    // Caso D: Si el objetivo es el nivel País (República Argentina / Cartografía)
-    else if (nodeId === 'cartografia' || nodeId === 'country' || nodeId === 'pais' || nodeId === 'argentina' || nodeId === 'world_ar' || nodeId === 'cont_ar' || nodeType === 'country') {
+    // Caso D1: Si el objetivo es la categoría Cartografía general -> Lleva a nivel Mundo para elegir país
+    else if (nodeId === 'cartografia' || nodeType === 'categoria_cartografia') {
+      cleanPath.push({ id: 'world', name: 'Mundo', type: 'world' }); // Lleva al nivel Mundo global para seleccionar país
+    }
+    // Caso D2: Si el objetivo es específicamente el nivel País (República Argentina / País)
+    else if (nodeId === 'country' || nodeId === 'pais' || nodeId === 'argentina' || nodeId === 'world_ar' || nodeId === 'cont_ar' || nodeType === 'country') {
       cleanPath.push({ id: 'world', name: 'Mundo', type: 'world' }); // Auto-agrega Mundo
       cleanPath.push({ id: 'continent', name: 'América del Sur', type: 'continent' }); // Auto-agrega Continente
       cleanPath.push({ id: 'country', name: 'Argentina', type: 'country' }); // Agrega País Argentina
@@ -677,7 +853,100 @@ function AppContent() { // Componente que maneja el estado global y las rutas de
   const handleUpdateProvince = (updatedProvince: ProvinceData) => { // Actualiza los datos de una provincia
     setProvincesData(prev => { // Actualiza el diccionario de provincias en memoria
       const next = { ...prev, [updatedProvince.id]: updatedProvince }; // Integra la provincia modificada
-      safeSetItem('argentina_data_custom_provinces', JSON.stringify(next)); // Intenta guardar de forma segura
+      safeSetItem('argentina_data_custom_provinces', JSON.stringify(next)); // Intenta guardar de forma segura de manera persistente
+      if (updatedProvince.id) { // Si existe la clave de la provincia
+        safeSetItem(`argentina_advanced_canvas_map_${updatedProvince.id}`, JSON.stringify({ // Guarda en localStorage específico
+          id: updatedProvince.id, // ID de la provincia
+          name: updatedProvince.name, // Nombre de la provincia
+          level: updatedProvince.id === 'WORLD_MAP' ? 'world' : updatedProvince.id === 'CONTINENT_MAP' ? 'continent' : 'province', // Nivel jerárquico
+          paths: (updatedProvince.municipalities || []).map(m => ({ // Mapea los municipios/sub-partes
+            id: m.id, // ID del municipio
+            name: m.name, // Nombre del municipio
+            d: m.d || '', // Trazado SVG 'd'
+            customData: { valor: m.value, porcentaje: m.percentage, fill: m.color }, // Metadatos personalizados
+            visualStyles: { fillColor: m.color || '#10b981', strokeColor: '#0f172a', strokeWidth: 1.5 } // Estilos de render
+          })),
+          transform: updatedProvince.mapTransform || { scale: 1, panX: 0, panY: 0 } // Transformaciones de matriz
+        }));
+      }
+
+      // PROPAGACIÓN AUTOMÁTICA INTELIGENTE: Si la provincia actualizada es una subdivisión (ej: Islas Malvinas, Córdoba, Santa Cruz, etc.) y no es el mapa macro nacional o mundial
+      if (updatedProvince.id && updatedProvince.id !== 'COUNTRY_MAP' && updatedProvince.id !== 'WORLD_MAP' && updatedProvince.id !== 'CONTINENT_MAP') {
+        const countryMap = next['COUNTRY_MAP']; // Obtiene la referencia al mapa principal de Argentina
+        if (countryMap && Array.isArray(countryMap.municipalities)) { // Si existe la lista de municipios en el mapa macro
+          const targetSubId = updatedProvince.id.toLowerCase().replace(/^ar-/, ''); // Normaliza el ID a minúsculas sin prefijo
+          const subIndex = countryMap.municipalities.findIndex(m => {
+            const mId = m.id.toLowerCase().replace(/^ar-/, ''); // Normaliza el ID del mapa macro
+            const mName = (m.name || '').toLowerCase(); // Normaliza nombre del mapa macro
+            const uName = (updatedProvince.name || '').toLowerCase(); // Normaliza nombre de la provincia actualizada
+            return mId === targetSubId || m.id.toLowerCase() === updatedProvince.id.toLowerCase() || (mName && uName && (mName === uName || mName.includes(uName) || uName.includes(mName)));
+          }); // Busca la subdivisión en el mapa macro
+
+          if (subIndex !== -1) { // Si la subdivisión existe dentro del mapa macro de Argentina
+            const origRefD = countryMap.municipalities[subIndex].d || provincePaths.find(p => p.id === updatedProvince.id || p.id.toLowerCase() === targetSubId)?.d || ''; // Busca la geometría original de referencia
+            const targetBBox = getPathBBox(origRefD); // Calcula el Bounding Box original en el mapa de Argentina
+            const unifiedD = (updatedProvince.municipalities || []).map(m => (m.d || '').trim()).filter(Boolean).join(' '); // Une los trazados vectoriales en una única figura unificada
+
+            if (unifiedD) { // Si se obtuvo una geometría válida
+              let fittedD = unifiedD; // Inicializa con la geometría sin escalar
+              if (targetBBox && targetBBox.width > 1 && targetBBox.height > 1) { // Si las dimensiones originales son válidas
+                fittedD = fitPathToBBox(unifiedD, targetBBox); // Escala y posiciona quirúrgicamente al tamaño original en el mapa de Argentina
+              }
+
+              const updatedCountryMunicipalities = [...countryMap.municipalities]; // Clona el arreglo de municipios
+              const targetSubItem = updatedCountryMunicipalities[subIndex]; // Referencia previa
+              const subId = targetSubItem.id || updatedProvince.id; // ID único de la subdivisión
+
+              updatedCountryMunicipalities[subIndex] = { // Actualiza quirúrgicamente la subdivisión seleccionada
+                ...targetSubItem, // Mantiene metadatos existentes
+                d: fittedD || targetSubItem.d, // Asigna la nueva silueta unificada auto-escalada
+                name: updatedProvince.name || targetSubItem.name, // Mantiene o actualiza el nombre
+                customData: {
+                  ...(targetSubItem.customData || {}),
+                  subItems: updatedProvince.municipalities // Guarda los trazados/múnicipios detallados
+                }
+              };
+              next['COUNTRY_MAP'] = { // Actualiza la entrada COUNTRY_MAP en el diccionario en memoria
+                ...countryMap, // Copia los datos previos del mapa macro
+                municipalities: updatedCountryMunicipalities // Inyecta la lista con la subdivisión perfeccionada
+              };
+
+              // Sincroniza la lista de rutas calibradas en localStorage para consumo del componente InteractiveMap
+              const rawCal = safeGetItem('argentina_calibrated_map_paths'); // Lee las rutas calibradas actuales
+              let calList: { id: string; d: string }[] = []; // Inicializa la lista
+              if (rawCal) { // Si existen datos previos
+                try { calList = JSON.parse(rawCal); } catch (e) {} // Parsea los datos de forma segura
+              }
+              if (!Array.isArray(calList) || calList.length === 0) { // Si estaba vacía
+                calList = provincePaths.map(p => ({ id: p.id, d: p.d })); // Carga la lista nativa de provincias
+              }
+              const calIdx = calList.findIndex(item => item.id === subId || item.id.toLowerCase() === targetSubId); // Busca el índice
+              if (calIdx !== -1) { // Si existe
+                calList[calIdx].d = fittedD; // Actualiza la geometría
+              } else { // Si es nueva
+                calList.push({ id: subId, d: fittedD }); // Inserta la nueva geometría
+              }
+              safeSetItem('argentina_calibrated_map_paths', JSON.stringify(calList)); // Guarda la lista calibrada
+              safeSetItem('argentina_paths_last_updated', Date.now().toString()); // Marca de tiempo para forzar re-render
+
+              safeSetItem(`argentina_advanced_canvas_map_COUNTRY_MAP`, JSON.stringify({ // Sincroniza la clave de almacenamiento del mapa de Argentina
+                ...next['COUNTRY_MAP'],
+                paths: updatedCountryMunicipalities.map(m => ({
+                  id: m.id,
+                  name: m.name,
+                  d: m.d || '',
+                  customData: { valor: m.value, porcentaje: m.percentage, fill: m.color, subItems: m.customData?.subItems },
+                  visualStyles: { fillColor: m.color || '#10b981', strokeColor: '#0f172a', strokeWidth: 1.5 }
+                }))
+              }));
+
+              window.dispatchEvent(new Event('storage')); // Dispara evento de almacenamiento local para re-renderizado
+              window.dispatchEvent(new CustomEvent('mapDataUpdated', { detail: { provinceId: subId, d: fittedD } })); // Dispara evento personalizado
+            }
+          }
+        }
+      }
+
       return next; // Retorna el diccionario actualizado
     }); // Fin de setProvincesData
   }; // Fin de handleUpdateProvince
@@ -790,26 +1059,36 @@ function AppContent() { // Componente que maneja el estado global y las rutas de
     return [];
   }, [activeMapLevel, selectedProvinceId, selectedProvince, navPath, appTreeNodes]);
 
-  // Manejador al seleccionar una subdivisión desde el menú desplegable del Header
+  // Manejador al seleccionar una subdivisión o país desde el buscador asistido del Header
   const handleHeaderSelectSubdivision = (subId: string) => {
-    if (activeMapLevel === 'world' || activeMapLevel === 'continent') {
-      handleSelectSubdivision(subId);
-    } else if (activeMapLevel === 'country' && !selectedProvinceId) {
-      // Si selecciona una provincia estando en Argentina
-      const prov = mockProvincesData[subId] || provincesData[subId];
-      if (prov) {
-        setSelectedProvinceId(subId);
-        MapsToNode({ id: subId, name: prov.name, type: 'provincia' });
-      }
-    } else {
-      // Si selecciona un municipio dentro de una provincia
-      handleSelectSubdivision(subId);
+    if (!subId) return; // Si el identificador recibido está vacío, se descarta
+
+    // 1. SI SE SELECCIONA EL NIVEL PAÍS ARGENTINA (AR, COUNTRY_MAP)
+    if (subId === 'AR' || subId === 'COUNTRY_MAP' || subId.toLowerCase() === 'argentina') {
+      setActiveMapLevel('country'); // Cambia el nivel activo a País
+      setSelectedProvinceId('COUNTRY_MAP'); // Asigna el nivel macro nacional
+      safeSetItem('argentina_selected_province_id', 'COUNTRY_MAP'); // Persiste en el almacenamiento local
+      MapsToNode({ id: 'country', name: 'República Argentina', type: 'pais' }); // Avanza la miga de pan al país
+      return; // Finaliza la ejecución
     }
-  };
+
+    // 2. SI SE SELECCIONA UNA DE LAS PROVINCIAS ARGENTINAS (EJ: AR-B, AR-N, AR-M, BUE, MIS, ETC.)
+    const foundProv = mockProvincesData[subId] || provincesData[subId]; // Busca coincidencia en el catálogo de provincias
+    if (foundProv) { // Si existe la provincia en el registro
+      setSelectedProvinceId(foundProv.id); // Establece el ID de la provincia activa
+      safeSetItem('argentina_selected_province_id', foundProv.id); // Guarda la preferencia en localStorage
+      setActiveMapLevel('country'); // Mantiene el contexto de país
+      MapsToNode({ id: foundProv.id, name: foundProv.name, type: 'provincia' }); // Navega directamente al nodo de la provincia
+      return; // Finaliza la ejecución
+    }
+
+    // 3. SI SE SELECCIONA OTRO PAÍS O SUBDIVISIONES GENERALES DE OTROS NIVELES
+    handleSelectSubdivision(subId); // Delega al manejador de selección de subdivisión
+  }; // Fin de handleHeaderSelectSubdivision
 
   return ( // Renderiza la interfaz de usuario completa
     <div id="dashboard-app" className="min-h-screen bg-slate-950 flex flex-col font-sans text-slate-100 selection:bg-emerald-500 selection:text-slate-950">
-      {/* Encabezado con barra de control de perfiles y roles RBAC integrada */}
+      {/* Encabezado con barra de control de perfiles y roles RBAC e integración de ciclo de vida de proyectos */}
       <Header 
         isAdmin={isAdmin} // Pasa el indicador de administración
         userRole={userRole} // Pasa el rol de usuario actual
@@ -819,6 +1098,14 @@ function AppContent() { // Componente que maneja el estado global y las rutas de
         onBreadcrumbClick={handleBreadcrumbClick} // Pasa el manejador de clic en migas de pan
         subdivisions={currentSubdivisions} // Pasa las subdivisiones activas del nodo actual
         onSelectSubdivision={handleHeaderSelectSubdivision} // Pasa el manejador de selección desde el desplegable del Header
+        projectName={projectName} // Pasa el nombre del proyecto activo
+        isDirty={isDirty} // Pasa el estado booleano de cambios sin guardar
+        onProjectNameChange={handleProjectNameChange} // Pasa el manejador para renombrar el proyecto
+        onNewProject={handleNewProject} // Pasa el manejador para crear nuevo proyecto
+        onOpenProject={handleOpenProject} // Pasa el manejador para abrir proyecto JSON
+        onSaveProject={handleSaveProject} // Pasa el manejador para guardar el proyecto activo
+        onSaveAsProject={handleSaveAsProject} // Pasa el manejador para Guardar Como
+        onCloseProject={handleCloseProject} // Pasa el manejador para cerrar el proyecto y restablecer el lienzo
         onLogin={(remember: boolean) => { // Manejador de inicio de sesión
           handleSelectRole('admin'); // Inicia sesión asignando rol de admin
         }}
@@ -829,8 +1116,8 @@ function AppContent() { // Componente que maneja el estado global y las rutas de
         onSelectRole={handleSelectRole} // Pasa la función para alternar roles
       />
 
-      {/* Cuerpo principal en distribución fluida */}
-      <div className="flex-1 flex flex-col lg:flex-row overflow-hidden">
+      {/* Cuerpo principal en distribución fluida con soporte para redimensionamiento proporcional de paneles */}
+      <div className={`flex-1 flex flex-col lg:flex-row overflow-hidden ${isResizingPanels ? 'select-none cursor-col-resize' : ''}`}>
         {navPath.length === 1 && location.pathname === '/' ? (
           /* Lobby Principal de Bienvenida cuando el historial de navegación está en el nivel raíz (length === 1) */
           <main className="flex-1 overflow-y-auto w-full">
@@ -844,32 +1131,57 @@ function AppContent() { // Componente que maneja el estado global y las rutas de
         ) : (
           /* Vista del Mapa Interactivo e Indicadores cuando se avanza en la navegación jerárquica */
           <>
-            {/* Panel Izquierdo: Mapa SVG vectorial interactivo e interacciones */}
-            <main className="w-full lg:w-[42%] p-4 xl:p-6 overflow-y-auto border-b lg:border-b-0 lg:border-r border-slate-800 flex flex-col space-y-4">
-          <InteractiveMap
-            selectedProvince={selectedProvince} // Pasa los datos de la provincia activa
-            onSelectProvince={(prov) => { // Manejador de selección de provincia
-              setSelectedProvinceId(prov.id); // Establece el ID de la provincia seleccionada
-              safeSetItem('argentina_selected_province_id', prov.id); // Guarda de forma segura en almacenamiento local
-            }}
-            onUpdateProvince={handleUpdateProvince} // Pasa la función de actualización de provincia
-            selectedMetric={selectedMetric} // Pasa la métrica activa
-            onChangeMetric={setSelectedMetric} // Pasa la función para cambiar la métrica
-            activeMapLevel={activeMapLevel} // Pasa el nivel de mapa activo
-            setActiveMapLevel={handleMapLevelChange} // Pasa la función para modificar el nivel
-            mapLevels={mapLevels} // Pasa la lista de niveles jerárquicos disponibles
-            selectedSubdivisionId={selectedSubdivisionId} // Pasa el ID de subdivisión seleccionado
-            setSelectedSubdivisionId={handleSelectSubdivision} // Pasa la función para seleccionar subdivisión
-            navigationPath={navigationPath} // Pasa el camino de migas de pan
-            onBreadcrumbClick={handleBreadcrumbClick} // Pasa el manejador de clic en migas de pan
-            navPath={navPath} // Pasa el historial de navegación dinámico universal
-            goBackToNode={goBackToNode} // Pasa el manejador para retroceder en nodos dinámicos
-            onNavigateToNode={MapsToNode} // Pasa la función para avanzar hacia un nuevo nodo dinámico
-          />
-        </main>
+            {/* Panel Izquierdo: Mapa SVG vectorial interactivo con ancho dinámico redimensionable */}
+            <main
+              className="w-full p-4 xl:p-6 overflow-y-auto border-b lg:border-b-0 border-slate-800 flex flex-col space-y-4 shrink-0 transition-all duration-75"
+              style={{ width: typeof window !== 'undefined' && window.innerWidth >= 1024 ? `${leftPanelWidthPercent}%` : '100%' }}
+            >
+              <InteractiveMap
+                selectedProvince={selectedProvince} // Pasa los datos de la provincia activa
+                onSelectProvince={(prov) => { // Manejador de selección de provincia
+                  setSelectedProvinceId(prov.id); // Establece el ID de la provincia seleccionada
+                  safeSetItem('argentina_selected_province_id', prov.id); // Guarda de forma segura en almacenamiento local
+                }}
+                onUpdateProvince={handleUpdateProvince} // Pasa la función de actualización de provincia
+                selectedMetric={selectedMetric} // Pasa la métrica activa
+                onChangeMetric={setSelectedMetric} // Pasa la función para cambiar la métrica
+                activeMapLevel={activeMapLevel} // Pasa el nivel de mapa activo
+                setActiveMapLevel={handleMapLevelChange} // Pasa la función para modificar el nivel
+                mapLevels={mapLevels} // Pasa la lista de niveles jerárquicos disponibles
+                selectedSubdivisionId={selectedSubdivisionId} // Pasa el ID de subdivisión seleccionado
+                setSelectedSubdivisionId={handleSelectSubdivision} // Pasa la función para seleccionar subdivisión
+                navigationPath={navigationPath} // Pasa el camino de migas de pan
+                onBreadcrumbClick={handleBreadcrumbClick} // Pasa el manejador de clic en migas de pan
+                navPath={navPath} // Pasa el historial de navegación dinámico universal
+                goBackToNode={goBackToNode} // Pasa el manejador para retroceder en nodos dinámicos
+                onNavigateToNode={MapsToNode} // Pasa la función para avanzar hacia un nuevo nodo dinámico
+              />
+            </main>
 
-        {/* Panel Derecho: Navegación por pestañas y visualizadores según RBAC */}
-        <section className="flex-1 p-4 xl:p-6 overflow-y-auto bg-slate-950 flex flex-col space-y-5">
+            {/* DIVISOR Y REDIMENSIONADOR PROPORCIONAL DE PANELES (LÍNEA ROJA CENTRAL ARRASTRABLE) */}
+            <div
+              onMouseDown={() => setIsResizingPanels(true)}
+              onTouchStart={() => setIsResizingPanels(true)}
+              className="hidden lg:flex w-3 hover:w-3.5 bg-slate-900/90 hover:bg-slate-900 border-x border-slate-800/80 cursor-col-resize items-center justify-center shrink-0 z-30 transition-all group relative select-none"
+              title="Arrastrar hacia los lados para redimensionar proporcionalmente ambos paneles"
+            >
+              {/* Línea roja indicadora central marcada por el usuario para indicar zona de arrastre */}
+              <div className={`w-1 rounded-full transition-all duration-200 ${
+                isResizingPanels
+                  ? 'bg-red-500 shadow-[0_0_12px_rgba(239,68,68,0.95)] h-full'
+                  : 'bg-red-500/85 group-hover:bg-red-500 group-hover:shadow-[0_0_8px_rgba(239,68,68,0.8)] h-28'
+              }`} />
+              {/* Etiqueta flotante con icono de arrastre */}
+              <div className="absolute bg-slate-950 border border-slate-700 text-slate-400 group-hover:text-red-400 p-0.5 rounded text-[8px] font-mono shadow-xl opacity-70 group-hover:opacity-100 transition-opacity">
+                ↔
+              </div>
+            </div>
+
+            {/* Panel Derecho: Navegación por pestañas y visualizadores con ancho adaptativo */}
+            <section
+              className="flex-1 p-4 xl:p-6 overflow-y-auto bg-slate-950 flex flex-col space-y-5 min-w-0"
+              style={{ width: typeof window !== 'undefined' && window.innerWidth >= 1024 ? `${100 - leftPanelWidthPercent}%` : '100%' }}
+            >
           {/* Pestañas superiores de navegación ligadas al enrutador React Router */}
           <div className="flex flex-wrap border-b border-slate-800 gap-1 pb-1">
             <button
@@ -993,6 +1305,9 @@ function AppContent() { // Componente que maneja el estado global y las rutas de
                     selectedProvince={selectedProvince} // Pasa la provincia seleccionada
                     onUpdateProvince={handleUpdateProvince} // Pasa la función de actualización
                     allProvinces={provincesData} // Pasa la colección de provincias
+                    selectedSubdivisionId={selectedSubdivisionId} // Pasa el ID de la subdivisión activa
+                    onSelectSubdivision={handleSelectSubdivision} // Pasa el manejador para sincronización bidireccional
+                    navPath={navPath} // Pasa el historial de navegación dinámico
                     onSaveMapEntity={(entity) => { // Manejador de guardado de mapa
                       console.log("Mapa guardado exitosamente por Usuario Pro:", entity); // Notifica el guardado
                     }}
@@ -1078,6 +1393,8 @@ function AppContent() { // Componente que maneja el estado global y las rutas de
                     mapLevels={mapLevels} // Pasa la lista de niveles
                     onUpdateMapLevels={handleUpdateMapLevels} // Pasa el manejador de actualización de niveles
                     navPath={navPath} // Pasa el historial de navegación dinámico universal
+                    selectedSubdivisionId={selectedSubdivisionId} // Pasa el ID de la subdivisión o polígono activo
+                    onSelectSubdivision={handleSelectSubdivision} // Pasa el manejador para sincronizar la selección
                   />
                 </div>
               </ProtectedRoute>
@@ -1104,12 +1421,20 @@ function AppContent() { // Componente que maneja el estado global y las rutas de
                     selectedProvince={selectedProvince} // Pasa la provincia seleccionada
                     onUpdateProvince={handleUpdateProvince} // Pasa la función de actualización
                     allProvinces={provincesData} // Pasa todas las provincias
+                    selectedSubdivisionId={selectedSubdivisionId} // Pasa el ID de la subdivisión activa
+                    onSelectSubdivision={handleSelectSubdivision} // Pasa el manejador para sincronizar selección
+                    navPath={navPath} // Pasa el historial de navegación dinámico
                     onSaveMapEntity={(entity) => { // Manejador de guardado
                       console.log("Mapa guardado por Super Admin:", entity); // Notifica el guardado
                     }}
                   />
                 </div>
               </ProtectedRoute>
+            } />
+
+            {/* Ruta Abierta/Protegida: Guía de Ayuda, Convenciones y Tutorial de Uso */}
+            <Route path="/admin/ayuda" element={ // Ruta pública y administrativa para la guía de uso
+              <AdminHelpGuide /> // Renderiza el componente de tutorial paso a paso con maquetas y flechas
             } />
 
             {/* Redirección por defecto a la ruta raíz pública para cualquier URL no encontrada */}

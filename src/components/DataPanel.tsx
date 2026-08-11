@@ -129,6 +129,10 @@ const SimpleBarChart = ({
   );
 };
 
+import { safeGetItem } from '../lib/storage'; // Importación de lectura segura de localStorage
+import { defaultDashboardConfig } from './AdminDashboardBuilder'; // Importación de la configuración por defecto de dashboards
+import { DashboardConfig } from '../types'; // Importación del tipo DashboardConfig
+
 export default function DataPanel({
   province,
   selectedSubdivisionId,
@@ -140,6 +144,29 @@ export default function DataPanel({
 }: DataPanelProps) {
   const [navToMuni, setNavToMuni] = useState(false);
   const selectedSubdivision = province.municipalities?.find(m => m.id === selectedSubdivisionId);
+
+  // Estado local para la configuración de widgets de dashboard del administrador
+  const [dashConfig, setDashConfig] = useState<DashboardConfig>(() => {
+    const saved = safeGetItem('app_dashboard_config'); // Lee localStorage
+    if (saved) { // Si existe la entrada
+      try { // Parsea JSON
+        const parsed = JSON.parse(saved); // Objeto parseado
+        if (parsed && parsed.widgets) return parsed; // Si es válido retorna
+      } catch (e) {} // Captura errores
+    } // Fin condicional
+    return defaultDashboardConfig; // Retorna fallback
+  });
+
+  // Escucha actualizaciones en tiempo real del AdminDashboardBuilder
+  React.useEffect(() => {
+    const handleConfigUpdate = (e: any) => {
+      if (e.detail) {
+        setDashConfig(e.detail);
+      }
+    };
+    window.addEventListener('dashboardConfigUpdated', handleConfigUpdate);
+    return () => window.removeEventListener('dashboardConfigUpdated', handleConfigUpdate);
+  }, []);
 
   // Determinación de la lista de nodos de navegación a desplegar (priorizando navPath universal)
   const displayNodes = (navPath && navPath.length > 0)
@@ -537,6 +564,45 @@ export default function DataPanel({
             </div>
           </div>
         </div>
+
+        {/* CARD DINÁMICA: Widgets de Métricas Personalizadas del Administrador */}
+        {dashConfig.widgets && dashConfig.widgets.filter(w => w.enabled).length > 0 && (
+          <div id="card-admin-custom-widgets" className="bg-slate-900/60 rounded-xl border border-emerald-500/30 p-5 shadow-xl col-span-1 xl:col-span-2 flex flex-col justify-between">
+            <div>
+              <div className="flex items-center justify-between mb-3 border-b border-slate-800 pb-2">
+                <h3 className="text-[10px] font-bold text-emerald-400 uppercase tracking-widest flex items-center">
+                  <TrendingUp className="text-emerald-400 mr-1.5" size={14} />
+                  Panel Métrico Dinámico ({province.abbreviation})
+                </h3>
+                <span className="text-[9px] bg-emerald-500/10 text-emerald-400 border border-emerald-500/20 px-2 py-0.5 rounded-full font-bold">
+                  {dashConfig.widgets.filter(w => w.enabled).length} Widgets Activos
+                </span>
+              </div>
+
+              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+                {dashConfig.widgets.filter(w => w.enabled).map((widget) => (
+                  <div key={widget.id} className="bg-slate-950/80 p-3.5 rounded-xl border border-slate-800 flex flex-col justify-between space-y-2 hover:border-emerald-500/40 transition-all">
+                    <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider block">
+                      {widget.title}
+                    </span>
+                    <div className="flex items-baseline justify-between">
+                      <span className="text-xl font-extrabold text-slate-100">
+                        {widget.metricKey === 'pobreza' ? `${(province.socialEmployment?.pobreza ?? 0).toFixed(1)}%` :
+                         widget.metricKey === 'desempleo' ? `${(province.socialEmployment?.desempleo ?? 0).toFixed(1)}%` :
+                         widget.metricKey === 'gini' ? `${(province.economicProfile?.gini ?? 0).toFixed(1)}%` :
+                         widget.metricKey === 'conectividad' ? `${province.connectivity?.internetAccess?.[2]?.value ?? 50}%` :
+                         '100%'}
+                      </span>
+                      <span className="text-[9px] font-mono text-emerald-400 font-semibold bg-emerald-950/40 border border-emerald-800/40 px-1.5 py-0.5 rounded">
+                        {widget.chartType.toUpperCase()}
+                      </span>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          </div>
+        )}
         </div>
       </motion.div>
     </div>

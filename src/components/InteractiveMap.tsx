@@ -24,13 +24,51 @@ import {
   Building2,
   Cpu,
   Grid,
-  Navigation
+  Navigation,
+  Sliders,
+  Search,
+  Sparkles,
+  MousePointerClick,
+  ChevronDown,
+  ChevronUp,
+  Check,
+  Filter,
+  Maximize2,
+  Target,
+  Hand
 } from 'lucide-react'; // Importación de íconos vectoriales para la interfaz interactiva
 import { provincePaths } from '../data/provincePaths'; // Importación de los trazos vectoriales de las provincias argentinas
-import { MetricType, ProvinceData, MunicipalityData, RegionNode, NavNode } from '../types'; // Importación del modelo de tipos de datos y nodos universales
+import { MetricType, ProvinceData, MunicipalityData, RegionNode, NavNode, DashboardConfig } from '../types'; // Importación del modelo de tipos de datos y nodos universales
 import { mockProvincesData } from '../data/mockData'; // Importación de datos mock de provincias
 import { getPathBBox, getMultiplePathsBBox } from '../lib/mapUtils'; // Helper para cálculo de cajas límite Bounding Box
 import { safeGetItem } from '../lib/storage'; // Utilidad para lectura segura protegida contra excepciones
+import AdminDashboardBuilder, { defaultDashboardConfig } from './AdminDashboardBuilder'; // Importación del constructor de dashboards y paletas dinámicas
+
+// Función auxiliar para calcular interpolación lineal entre dos colores Hex (#RRGGBB)
+const interpolateColorHex = (color1: string, color2: string, factor: number): string => {
+  try { // Inicio del bloque try-catch para prevenir fallos en cadenas mal formateadas
+    const f = Math.max(0, Math.min(1, factor)); // Normaliza el factor para estar estrictamente entre 0 y 1
+    const c1 = color1.replace('#', ''); // Remueve el numeral del primer color
+    const c2 = color2.replace('#', ''); // Remueve el numeral del segundo color
+    if (c1.length !== 6 || c2.length !== 6) return color1; // Retorna el primer color si el formato no es de 6 dígitos
+
+    const r1 = parseInt(c1.substring(0, 2), 16); // Obtiene componente Rojo del primer color
+    const g1 = parseInt(c1.substring(2, 4), 16); // Obtiene componente Verde del primer color
+    const b1 = parseInt(c1.substring(4, 6), 16); // Obtiene componente Azul del primer color
+
+    const r2 = parseInt(c2.substring(0, 2), 16); // Obtiene componente Rojo del segundo color
+    const g2 = parseInt(c2.substring(2, 4), 16); // Obtiene componente Verde del segundo color
+    const b2 = parseInt(c2.substring(4, 6), 16); // Obtiene componente Azul del segundo color
+
+    const r = Math.round(r1 + f * (r2 - r1)); // Calcula Rojo interpolado
+    const g = Math.round(g1 + f * (g2 - g1)); // Calcula Verde interpolado
+    const b = Math.round(b1 + f * (b2 - b1)); // Calcula Azul interpolado
+
+    return `#${((1 << 24) + (r << 16) + (g << 8) + b).toString(16).slice(1)}`; // Devuelve el color interpolado final en Hexadecimal
+  } catch (e) { // En caso de cualquier excepción
+    return color1; // Retorna el color por defecto
+  } // Fin del bloque catch
+}; // Fin de la función interpolateColorHex
 
 // Interfaz de propiedades actualizadas para el componente del mapa vectorial interactivo universal
 interface InteractiveMapProps {
@@ -71,7 +109,52 @@ export default function InteractiveMap({
   const [hoveredProv, setHoveredProv] = useState<string | null>(null); // Estado de provincia en hover
   const [zoomLevel, setZoomLevel] = useState(1); // Estado de nivel de zoom del lienzo
   const [panOffset, setPanOffset] = useState({ x: 0, y: 0 }); // Estado de desplazamiento del lienzo (pan)
+  const [isPanToolActive, setIsPanToolActive] = useState<boolean>(false); // Estado para activar/desactivar la herramienta Manito (Pan libre)
+  const [isDraggingCanvas, setIsDraggingCanvas] = useState<boolean>(false); // Indica si el usuario está arrastrando el lienzo con el ratón
+  const [dragStartPos, setDragStartPos] = useState<{ x: number; y: number }>({ x: 0, y: 0 }); // Posición inicial del cursor durante el arrastre
   const [hoveredMuni, setHoveredMuni] = useState<string | null>(null); // Estado de subdivisión en hover
+
+  // EFECTO DE ARRASTRE GLOBAL EN 360° PARA LA HERRAMIENTA MANITO EN EL MAPA INTERACTIVO
+  useEffect(() => {
+    if (!isDraggingCanvas) return; // Si no hay arrastre activo, ignora
+
+    // Manejador del movimiento de puntero en cualquier dirección a nivel de ventana global
+    const handleGlobalPointerMove = (e: PointerEvent) => {
+      setPanOffset({
+        x: e.clientX - dragStartPos.x, // Calcula el desplazamiento horizontal
+        y: e.clientY - dragStartPos.y  // Calcula el desplazamiento vertical
+      });
+    };
+
+    // Manejador para finalizar el arrastre
+    const handleGlobalPointerUp = () => {
+      setIsDraggingCanvas(false); // Apaga el estado de arrastre
+    };
+
+    window.addEventListener('pointermove', handleGlobalPointerMove); // Añade oyente de movimiento global
+    window.addEventListener('pointerup', handleGlobalPointerUp);     // Añade oyente de liberación global
+    window.addEventListener('pointercancel', handleGlobalPointerUp); // Añade oyente de cancelación
+
+    return () => { // Limpieza de oyentes al soltar o desmontar
+      window.removeEventListener('pointermove', handleGlobalPointerMove);
+      window.removeEventListener('pointerup', handleGlobalPointerUp);
+      window.removeEventListener('pointercancel', handleGlobalPointerUp);
+    };
+  }, [isDraggingCanvas, dragStartPos]);
+
+  // Manejador del evento inicio de arrastre (pointerdown) para la herramienta Manito
+  const handlePointerDownPan = (e: React.PointerEvent) => {
+    if (isPanToolActive || e.button === 1 || e.button === 2) { // Activo con manito o botón central/derecho
+      setIsDraggingCanvas(true); // Inicia estado de arrastre
+      setDragStartPos({ x: e.clientX - panOffset.x, y: e.clientY - panOffset.y }); // Guarda delta inicial
+      e.preventDefault(); // Evita selecciones indeseadas
+    }
+  };
+
+  // Manejador del fin de arrastre (pointerup)
+  const handlePointerUpPan = () => {
+    setIsDraggingCanvas(false);
+  };
   const [showCategoryGrid, setShowCategoryGrid] = useState<boolean>(false); // Estado para alternar el menú de categorías grandes
 
   // Identificación del nodo activo en el historial de navegación dinámico universal navPath
@@ -104,11 +187,57 @@ export default function InteractiveMap({
   // States for Map Layer and Vector Manager
   const [showManager, setShowManager] = useState(false);
   const [managerTab, setManagerTab] = useState<'palette' | 'divisions'>('palette');
+  const [showAdminModal, setShowAdminModal] = useState(false); // Estado para abrir el modal AdminDashboardBuilder
+
+  // Estado local para la configuración dinámica de paletas y dashboards
+  const [dashConfig, setDashConfig] = useState<DashboardConfig>(() => {
+    const saved = safeGetItem('app_dashboard_config'); // Lee la entrada en localStorage
+    if (saved) { // Si existe
+      try { // Trata de deserializar
+        const parsed = JSON.parse(saved); // Parsea a objeto
+        if (parsed && parsed.palette) return parsed; // Si es válido lo retorna
+      } catch (e) {} // Captura fallos
+    } // Fin condicional
+    return defaultDashboardConfig; // Retorna por defecto
+  });
+
+  // Escucha cambios en tiempo real en la configuración de paletas y dashboards
+  useEffect(() => {
+    const handleConfigUpdate = (e: any) => {
+      if (e.detail) {
+        setDashConfig(e.detail);
+      }
+    };
+    window.addEventListener('dashboardConfigUpdated', handleConfigUpdate);
+    return () => window.removeEventListener('dashboardConfigUpdated', handleConfigUpdate);
+  }, []);
 
   // Input states for editing individual subdivisions
   const [editSubName, setEditSubName] = useState('');
   const [editSubVal, setEditSubVal] = useState(30);
   const [editSubPct, setEditSubPct] = useState(10);
+
+  // ESTADOS Y CÁLCULOS PARA EL NAVEGADOR INTELIGENTE DE RUTA Y SELECCIÓN CON SUBMENÚS Y LUPITA IA
+  const [isRouteMenuOpen, setIsRouteMenuOpen] = useState(false); // Estado para abrir o cerrar el submenú flotante
+  const [routeSearchQuery, setRouteSearchQuery] = useState(''); // Estado para la búsqueda interactiva con IA y Lupita
+  const [activeRouteSubmenu, setActiveRouteSubmenu] = useState<'all' | 'macro' | 'provinces' | 'municipalities'>('all'); // Pestaña/Filtro del submenú
+  const [expandedSubcategory, setExpandedSubcategory] = useState<string | null>('provinces'); // Submenú colapsable activo
+
+  // Nombre o etiqueta formateada de la selección activa en tiempo real
+  const currentSelectionLabel = useMemo(() => {
+    if (selectedSubdivisionId) { // 1. Si hay una subdivisión activa seleccionada
+      const foundMuni = selectedProvince.municipalities?.find(m => m.id === selectedSubdivisionId || m.name.toLowerCase() === selectedSubdivisionId.toLowerCase());
+      if (foundMuni) return `🔹 ${foundMuni.name} (${foundMuni.value}%)`;
+      return `🔹 ${selectedSubdivisionId}`;
+    }
+    if (selectedProvince && mockProvincesData[selectedProvince.id]) { // 2. Si hay una provincia activa de Argentina
+      return `📍 ${selectedProvince.name} (${selectedProvince.abbreviation})`;
+    }
+    // 3. Nivel macro por defecto
+    const levelObj = mapLevels.find(l => l.id === activeMapLevel);
+    const emoji = activeMapLevel === 'world' ? '🌎 ' : activeMapLevel === 'continent' ? '🗺️ ' : activeMapLevel === 'country' ? '🇦🇷 ' : '🌐 ';
+    return `${emoji}${levelObj?.name || activeMapLevel || 'República Argentina'}`;
+  }, [selectedSubdivisionId, selectedProvince, activeMapLevel, mapLevels]);
 
   // Custom transform states for the selected province minimap
   const [miniScale, setMiniScale] = useState(1.0);
@@ -277,38 +406,46 @@ export default function InteractiveMap({
     }
   };
 
-  // Color generator based on metric values (Sophisticated Dark monochromatic emerald theme)
-  const getColorForValue = (val: number, metric: MetricType) => {
-    if (metric === 'pobreza') {
-      if (val <= 22) return '#022c22'; // Emerald 950 - dark
-      if (val <= 30) return '#064e3b'; // Emerald 900
-      if (val <= 38) return '#047857'; // Emerald 700
-      return '#10b981'; // Emerald 500 - bright
-    } else if (metric === 'desempleo') {
-      if (val <= 7.5) return '#022c22';
-      if (val <= 10) return '#064e3b';
-      if (val <= 12.5) return '#047857';
-      return '#10b981';
-    } else if (metric === 'gini') {
-      if (val <= 44) return '#022c22';
-      if (val <= 50) return '#064e3b';
-      if (val <= 58) return '#047857';
-      return '#10b981';
-    } else {
-      if (val <= 65) return '#022c22';
-      if (val <= 75) return '#064e3b';
-      if (val <= 85) return '#047857';
-      return '#10b981';
+  // Generador dinámico de color según las métricas y el modo de paleta configurado (Cartográfico, Coropleta, Custom)
+  const getColorForValue = (val: number, metric: MetricType, customPathColor?: string) => {
+    // 1. MODO TEMÁTICO / CUSTOM / PERSONALIZADO: Si la pieza tiene un color propio asignado
+    if (dashConfig.palette.mode === 'custom') {
+      return customPathColor || dashConfig.palette.baseColor || '#0f1a30'; // Retorna color custom o base
     }
+
+    // 2. MODO CARTOGRÁFICO INSTITUCIONAL (Por Defecto para Argentina):
+    if (dashConfig.palette.mode === 'cartographic') {
+      return dashConfig.palette.baseColor || '#0f1a30'; // Aplica la paleta base sobria
+    }
+
+    // 3. MODO COROPLETA / MAPA DE CALOR ESTADÍSTICO (Interpolación Dinámica):
+    // Rango mínimo y máximo estimado por métrica para interpolar suavemente el color entre minColor y maxColor
+    let minVal = 0;
+    let maxVal = 100;
+    if (metric === 'pobreza') { minVal = 20; maxVal = 55; }
+    else if (metric === 'desempleo') { minVal = 5; maxVal = 16; }
+    else if (metric === 'gini') { minVal = 40; maxVal = 65; }
+    else if (metric === 'conectividad') { minVal = 45; maxVal = 95; }
+
+    // Calcula el factor de proporción en escala de 0 a 1
+    const factor = Math.max(0, Math.min(1, (val - minVal) / (maxVal - minVal || 1)));
+
+    // Retorna el color resultante de interpolar linealmente entre minColor y maxColor
+    return interpolateColorHex(
+      dashConfig.palette.minColor || '#064e3b',
+      dashConfig.palette.maxColor || '#10b981',
+      factor
+    );
   };
 
+  // Función para manejar el zoom dinámico con incremento o decremento suave
   const handleZoom = (direction: 'in' | 'out') => {
-    if (direction === 'in') {
-      setZoomLevel(prev => Math.min(prev + 0.5, 3));
-    } else {
-      setZoomLevel(prev => Math.max(prev - 0.5, 1));
-      if (zoomLevel <= 1.5) {
-        setPanOffset({ x: 0, y: 0 });
+    if (direction === 'in') { // Acercar mapa
+      setZoomLevel(prev => Math.min(prev + 0.25, 10)); // Incrementa el zoom hasta 1000%
+    } else { // Alejar mapa
+      setZoomLevel(prev => Math.max(prev - 0.25, 0.1)); // Decrementa el zoom hasta 10%
+      if (zoomLevel <= 1.2) {
+        setPanOffset({ x: 0, y: 0 }); // Auto-centra cuando se aproxima a la vista normal
       }
     }
   };
@@ -348,7 +485,7 @@ export default function InteractiveMap({
             </select>
           </div>
 
-          <div className="flex items-center space-x-2">
+          <div className="flex flex-wrap items-center gap-2">
             {/* Botón para alternar el menú de Categorías Grandes Principales */}
             <button
               onClick={() => setShowCategoryGrid(!showCategoryGrid)}
@@ -362,26 +499,135 @@ export default function InteractiveMap({
               <Grid size={16} />
               <span>Categorías</span>
             </button>
+
+            {/* CONTROLES AVANZADOS DE ZOOM CON % EDITABLE, SLIDER DESPLAZABLE Y AJUSTE VISUAL FIT */}
+            <div className="flex items-center space-x-1 bg-slate-950 border border-slate-800 rounded-lg p-1">
+              {/* BOTÓN HERRAMIENTA MANITO (DESPLAZAR / ARRASTRAR MAPA LIBREMENTE) */}
+              <button
+                onClick={() => setIsPanToolActive(!isPanToolActive)}
+                className={`p-1.5 rounded transition-all cursor-pointer flex items-center space-x-1 ${
+                  isPanToolActive
+                    ? 'bg-emerald-500 text-slate-950 font-bold border border-emerald-400 shadow-[0_0_12px_rgba(16,185,129,0.7)]'
+                    : 'hover:bg-slate-900 border border-transparent hover:border-slate-800 text-slate-300 hover:text-emerald-400'
+                }`}
+                title={isPanToolActive ? "Desactivar Herramienta Manito" : "Activar Herramienta Manito (Mover y Arrastrar Mapa o Dibujo Libremente)"}
+              >
+                <Hand size={16} />
+                <span className="text-[10px] font-bold hidden md:inline">
+                  {isPanToolActive ? 'Manito ON' : 'Manito'}
+                </span>
+              </button>
+
+              <div className="w-px h-4 bg-slate-800 mx-0.5" />
+
+              {/* Botón Alejar Zoom */}
+              <button
+                onClick={() => handleZoom('out')}
+                className="p-1.5 hover:bg-slate-900 border border-transparent hover:border-slate-800 text-slate-300 rounded transition-colors cursor-pointer hover:text-emerald-400"
+                title="Alejar Zoom"
+              >
+                <ZoomOut size={16} />
+              </button>
+
+              {/* Porcentaje de Zoom Editable (%) */}
+              <div className="flex items-center bg-slate-900 border border-slate-800 rounded px-1.5 py-0.5">
+                <input
+                  type="text"
+                  value={`${Math.round(zoomLevel * 100)}%`}
+                  onChange={(e) => {
+                    const valStr = e.target.value.replace(/[^0-9.]/g, '');
+                    const numVal = parseFloat(valStr);
+                    if (!isNaN(numVal) && numVal > 0) {
+                      setZoomLevel(numVal / 100);
+                    }
+                  }}
+                  className="w-12 text-center bg-transparent text-xs font-bold text-emerald-400 font-mono outline-none"
+                  title="Escribe un porcentaje de zoom personalizado (ej: 150%)"
+                />
+              </div>
+
+              {/* Botón Acercar Zoom */}
+              <button
+                onClick={() => handleZoom('in')}
+                className="p-1.5 hover:bg-slate-900 border border-transparent hover:border-slate-800 text-slate-300 rounded transition-colors cursor-pointer hover:text-emerald-400"
+                title="Acercar Zoom"
+              >
+                <ZoomIn size={16} />
+              </button>
+
+              {/* BARRA DE DESPLAZAMIENTO (SLIDER EXTRA) PARA MOVER CON MOUSE SIN LÍMITE */}
+              <input
+                type="range"
+                min="10"
+                max="1000"
+                step="5"
+                value={Math.round(zoomLevel * 100)}
+                onChange={(e) => {
+                  const newPct = parseFloat(e.target.value);
+                  setZoomLevel(newPct / 100);
+                }}
+                className="w-16 sm:w-24 h-1.5 bg-slate-800 rounded-lg appearance-none cursor-pointer accent-emerald-500"
+                title="Desliza para acercar o alejar el zoom sin límites"
+              />
+
+              {/* BOTÓN DE AJUSTE VISUAL FIT (SEGÚN LA PANTALLA Y SELECCIÓN) */}
+              <button
+                onClick={() => {
+                  setZoomLevel(1);
+                  setPanOffset({ x: 0, y: 0 });
+                }}
+                className="p-1.5 bg-emerald-500/10 hover:bg-emerald-500/20 border border-emerald-500/30 text-emerald-400 rounded transition-colors cursor-pointer flex items-center space-x-1"
+                title="Ajustar Visual: Centrar y adaptar encuadre a la pantalla"
+              >
+                <Maximize2 size={14} />
+                <span className="text-[10px] font-bold hidden xl:inline">Fit</span>
+              </button>
+
+              {/* BOTÓN FOCUS SELECCIÓN (CENTRAR ZOOM EN TERRITORIO SELECCIONADO) */}
+              {(selectedProvince || selectedSubdivisionId) && (
+                <button
+                  onClick={() => {
+                    setZoomLevel(2.2);
+                    if (selectedProvincePath) {
+                      const bbox = getPathBBox(selectedProvincePath);
+                      if (bbox) {
+                        setPanOffset({ x: -(bbox.x - 400) * 0.5, y: -(bbox.y - 300) * 0.5 });
+                      }
+                    }
+                  }}
+                  className="p-1.5 bg-emerald-500/20 hover:bg-emerald-500/30 border border-emerald-500/40 text-emerald-300 rounded transition-colors cursor-pointer flex items-center space-x-1 animate-fade-in"
+                  title="Centrar el zoom en el territorio o región seleccionada"
+                >
+                  <Target size={14} className="text-emerald-400" />
+                  <span className="text-[10px] font-bold hidden xl:inline">Focus</span>
+                </button>
+              )}
+
+              {/* BOTÓN DESELECCIONAR (LIMPIAR LA SELECCIÓN DEL MAPA) */}
+              {(selectedSubdivisionId || (selectedProvince && selectedProvince.id !== 'AR' && selectedProvince.id !== 'COUNTRY_MAP')) && (
+                <button
+                  onClick={() => {
+                    if (setSelectedSubdivisionId) setSelectedSubdivisionId(null);
+                    setZoomLevel(1);
+                    setPanOffset({ x: 0, y: 0 });
+                  }}
+                  className="p-1.5 bg-slate-800 hover:bg-slate-700 border border-slate-700 text-slate-300 rounded transition-colors cursor-pointer flex items-center space-x-1 animate-fade-in"
+                  title="Deseleccionar territorio y restablecer vista completa"
+                >
+                  <X size={14} className="text-slate-400" />
+                  <span className="text-[10px] font-bold hidden xl:inline">Deseleccionar</span>
+                </button>
+              )}
+            </div>
+
+            {/* Botón para Configuración de Paleta & Dashboards Dinámicos */}
             <button
-              onClick={() => handleZoom('in')}
-              className="p-2 bg-slate-950 hover:bg-slate-900 border border-slate-800 text-slate-300 rounded transition-colors cursor-pointer hover:text-emerald-400"
-              title="Acercar"
+              onClick={() => setShowAdminModal(!showAdminModal)}
+              className="flex items-center space-x-1.5 px-3 py-2 text-xs font-bold bg-slate-950 hover:bg-slate-900 border border-slate-800 text-emerald-400 rounded transition-colors cursor-pointer"
+              title="Configurar Paleta & Dashboards"
             >
-              <ZoomIn size={18} />
-            </button>
-            <button
-              onClick={() => handleZoom('out')}
-              className="p-2 bg-slate-950 hover:bg-slate-900 border border-slate-800 text-slate-300 rounded transition-colors cursor-pointer hover:text-emerald-400"
-              title="Alejar"
-            >
-              <ZoomOut size={18} />
-            </button>
-            <button
-              onClick={() => { setZoomLevel(1); setPanOffset({ x: 0, y: 0 }); }}
-              className="p-2 bg-slate-950 hover:bg-slate-900 border border-slate-800 text-slate-300 rounded transition-colors cursor-pointer hover:text-emerald-400"
-              title="Restablecer"
-            >
-              <Compass size={18} />
+              <Sliders size={16} />
+              <span className="hidden md:inline">Paleta & Dashboards</span>
             </button>
           </div>
         </div>
@@ -580,102 +826,336 @@ export default function InteractiveMap({
       ) : (
         /* Caja Principal del Mapa SVG */
       <div id="svg-map-wrapper" className="relative flex-1 min-h-[380px] bg-slate-950 rounded border border-slate-800 overflow-hidden flex items-center justify-center p-4">
-        {/* Selector de Nivel y Elementos del Mapa Desplegable (Índice de Ruta Estructurado) */}
-        <div id="dropdown-route-index" className="absolute top-4 left-4 z-40 flex flex-col space-y-1.5 bg-slate-900/95 backdrop-blur-md p-3 rounded-lg border border-slate-800 shadow-xl min-w-[220px] pointer-events-auto">
-          {/* Etiqueta superior del selector jerárquico de ruta */}
-          <span className="text-[9px] font-bold text-slate-500 uppercase tracking-widest block">
-            Índice de Ruta / Selección
-          </span>
-          {/* Selector Unificado: Permite navegar entre niveles macro y elegir las 24 provincias reales o subdivisiones */}
-          <select
-            id="map-level-select" // Identificador HTML único para el selector desplegable
-            value={ // Valor seleccionado en tiempo real según la jerarquía activa y la provincia o subdivisión
-              selectedSubdivisionId // 1. Si hay una subdivisión activa seleccionada (ej. municipio)
-                ? selectedSubdivisionId // Utiliza la ID del municipio o subdivisión
-                : (selectedProvince && mockProvincesData[selectedProvince.id]) // 2. Si hay una de las 24 provincias seleccionadas
-                  ? selectedProvince.id // Utiliza la ID de la provincia (ej. AR-M, AR-B)
-                  : (activeMapLevel === 'pais' ? 'country' : activeMapLevel || 'country') // 3. En caso contrario, utiliza el nivel macro (world, continent, country)
-            } // Fin de la evaluación corregida y sincronizada del valor del select
-            onChange={(e) => { // Manejador de evento al cambiar la opción seleccionada por el usuario
-              const val = e.target.value; // Almacena el valor recuperado de la opción elegida
-
-              // 1. SI EL USUARIO SELECCIONA UN NIVEL MACRO (Mundo, Continente, País, Provincia, Ciudad)
-              if (val === 'world' || val === 'continent' || val === 'country' || val === 'province' || val === 'city' || val === 'neighborhood') { // Comprueba nivel macro
-                setActiveMapLevel(val); // Modifica el nivel de mapa activo en el motor de renderizado
-                setSelectedSubdivisionId(null); // Limpia la subdivisión activa previamente seleccionada
-                if (onNavigateToNode) { // Verifica si está disponible la función de navegación universal navPath
-                  const levelName = mapLevels.find(l => l.id === val)?.name || val; // Obtiene el nombre amigable del nivel
-                  onNavigateToNode({ id: val, name: levelName, type: 'macro_level' }); // Agrega el nodo jerárquico al historial navPath
-                } // Fin de comprobación onNavigateToNode
-              } // Fin del condicional de nivel macro
-              // 2. SI EL USUARIO SELECCIONA UNA PROVINCIA ARGENTINA DE LAS 24 PROVINCIAS REALES
-              else if (mockProvincesData[val]) { // Comprueba si el valor coincide con una provincia válida de Argentina
-                setActiveMapLevel('country'); // Asegura que el nivel activo permanezca en 'country' para renderizar el mapa completo de Argentina
-                const fullData = mockProvincesData[val]; // Recupera el objeto completo de la provincia seleccionada
-                onSelectProvince(fullData); // Asigna la provincia activa en el estado global
-                if (onNavigateToNode) { // Verifica la disponibilidad del manejador de navegación
-                  onNavigateToNode({ id: val, name: fullData.name, type: 'provincia' }); // Inyecta el nodo de la provincia en navPath
-                } // Fin de condicional de navegación
-                setSelectedSubdivisionId(null); // Deselecciona subdivisiones secundarias
-              } // Fin de condicional de provincia
-              // 3. SI EL USUARIO SELECCIONA UNA SUBDIVISIÓN O MUNICIPIO ESPECÍFICO
-              else { // Ejecuta la selección de subdivisión interna
-                setSelectedSubdivisionId(val); // Guarda la ID de la subdivisión seleccionada
-                const foundSub = selectedProvince.municipalities?.find(m => m.id === val); // Localiza los datos del municipio
-                if (foundSub && onNavigateToNode) { // Si existe el municipio y la función de navegación
-                  onNavigateToNode({ id: val, name: foundSub.name, type: 'subdivision' }); // Agrega la subdivisión al navPath
-                } // Fin de condicional de subdivisión
-              } // Fin del bloque condicional general
-            }} // Fin de onChange
-            className="w-full bg-slate-950 border border-slate-800 text-slate-200 text-xs font-bold rounded p-1.5 outline-none transition-all focus:border-emerald-500 cursor-pointer text-emerald-400" // Estilos Tailwind estéticos y accesibles
+        {/* Selector de Nivel y Elementos del Mapa Desplegable (Índice de Ruta Estructurado con Submenús y Buscador Inteligente IA) */}
+        <div id="dropdown-route-index" className="absolute top-4 left-4 z-40 flex flex-col space-y-1.5 min-w-[260px] max-w-[340px] pointer-events-auto">
+          {/* Botón Disparador del Menú Emergente */}
+          <button
+            onClick={() => setIsRouteMenuOpen(!isRouteMenuOpen)}
+            className="w-full bg-slate-900/95 hover:bg-slate-900 border border-slate-700/80 hover:border-emerald-500/80 p-2.5 rounded-xl shadow-2xl backdrop-blur-md flex items-center justify-between transition-all cursor-pointer group text-left"
+            title="Abrir Menú de Ruta y Búsqueda Inteligente"
           >
-            {/* GRUPO 1: VISTAS DE ALCANCE GENERAL Y NIVELES MACRO */}
-            <optgroup label="🌐 Niveles de Alcance Macro">
-              {mapLevels.map(level => ( // Mapea la lista de niveles jerárquicos disponibles
-                <option key={level.id} value={level.id}> {/* Opción con clave e ID única */}
-                  {level.id === 'world' ? '🌎 ' : // Emoji representativo para Mundo
-                   level.id === 'continent' ? '🗺️ ' : // Emoji para Continente
-                   level.id === 'country' ? '🇦🇷 ' : // Emoji para País
-                   level.id === 'province' ? '🏢 ' : // Emoji para Provincia
-                   level.id === 'city' ? '📍 ' : // Emoji para Ciudad
-                   level.id === 'neighborhood' ? '🏘️ ' : '💠 '} {/* Emoji por defecto */}
-                  {level.name} {/* Muestra el nombre legible del nivel */}
-                </option> // Fin de option
-              ))} {/* Fin del mapa de niveles */}
-            </optgroup> {/* Fin de optgroup de niveles macro */}
+            <div className="flex flex-col truncate pr-2">
+              <span className="text-[8.5px] font-extrabold text-slate-500 uppercase tracking-widest flex items-center gap-1 mb-0.5">
+                <span>Índice de Ruta / Selección</span>
+                <span className="text-[7.5px] bg-emerald-500/20 text-emerald-400 px-1 py-0.2 rounded font-mono">IA</span>
+              </span>
+              <span className="text-xs font-bold text-emerald-300 truncate group-hover:text-emerald-200">
+                {currentSelectionLabel}
+              </span>
+            </div>
+            <div className="flex items-center space-x-1 shrink-0">
+              <div className="p-1 bg-slate-800 rounded-lg text-slate-400 group-hover:text-emerald-400 transition-colors">
+                <Search size={12} />
+              </div>
+              {isRouteMenuOpen ? <ChevronUp size={14} className="text-emerald-400" /> : <ChevronDown size={14} className="text-slate-400" />}
+            </div>
+          </button>
 
-            {/* GRUPO 2: PROVINCIAS REALES DE LA REPÚBLICA ARGENTINA (24 PROVINCIAS CATASTRALES) */}
-            <optgroup label="🇦🇷 Provincias de Argentina (24 Nodos)">
-              {Object.values(mockProvincesData).map(prov => ( // Recorre las 24 provincias argentinas registradas en la base de datos
-                <option key={prov.id} value={prov.id}> {/* Opción asignada a la provincia */}
-                  📍 {prov.name} ({prov.abbreviation}) {/* Muestra el nombre oficial y abreviatura ISO */}
-                </option> // Fin de option provincia
-              ))} {/* Fin del mapeo de provincias */}
-            </optgroup> {/* Fin de optgroup provincias */}
+          {/* Menú Emergente Desplegable con Submenús y Buscador Inteligente con IA */}
+          <AnimatePresence>
+            {isRouteMenuOpen && (
+              <motion.div
+                initial={{ opacity: 0, y: -10, scale: 0.98 }}
+                animate={{ opacity: 1, y: 0, scale: 1 }}
+                exit={{ opacity: 0, y: -10, scale: 0.98 }}
+                transition={{ duration: 0.15 }}
+                className="bg-slate-950/98 border border-slate-700 shadow-2xl rounded-2xl p-2.5 space-y-2 backdrop-blur-2xl text-left"
+              >
+                {/* BUSCADOR CON IA Y LUPITA */}
+                <div className="relative flex items-center">
+                  <Search size={13} className="absolute left-2.5 text-emerald-400 pointer-events-none" />
+                  <input
+                    type="text"
+                    value={routeSearchQuery}
+                    onChange={(e) => setRouteSearchQuery(e.target.value)}
+                    placeholder="🔍 Buscar provincia, municipio o nodo con IA..."
+                    className="w-full bg-slate-900 border border-slate-700 focus:border-emerald-500 text-slate-100 text-xs rounded-xl pl-8 pr-7 py-1.5 outline-none font-bold placeholder:text-slate-500 transition-all"
+                    autoFocus
+                  />
+                  {routeSearchQuery ? (
+                    <button
+                      onClick={() => setRouteSearchQuery('')}
+                      className="absolute right-2 text-slate-400 hover:text-slate-200 text-xs"
+                    >
+                      ✕
+                    </button>
+                  ) : (
+                    <Sparkles size={11} className="absolute right-2.5 text-emerald-400/70 animate-pulse pointer-events-none" />
+                  )}
+                </div>
 
-            {/* GRUPO 3: MUNICIPIOS / SUBDIVISIONES DEL TERRITORIO SELECCIONADO */}
-            {selectedProvince && selectedProvince.municipalities && selectedProvince.municipalities.length > 0 && ( // Verifica existencia de municipios
-              <optgroup label={`🏢 Subdivisiones de ${selectedProvince.name}`}> {/* Etiqueta del grupo de subdivisiones */}
-                {selectedProvince.municipalities.map(muni => ( // Mapea los municipios de la provincia
-                  <option key={muni.id} value={muni.id}> {/* Opción para el municipio */}
-                    🔹 {muni.name} ({muni.value}%) {/* Muestra el nombre del municipio y su indicador */}
-                  </option> // Fin de option municipio
-                ))} {/* Fin de mapeo de municipios */}
-              </optgroup> // Fin de optgroup municipios
-            )} {/* Fin de evaluación condicional de municipios */}
-          </select> {/* Fin de elemento select unificado */}
-          {/* Pie informativo del selector sincronizado con navPath */}
-          <div className="flex items-center justify-between text-[8.5px] text-slate-400 mt-1">
-            {/* Indicador pulsante de sincronización activa */}
-            <span className="flex items-center space-x-1">
-              <span className="w-1.5 h-1.5 bg-emerald-400 rounded-full animate-pulse" /> {/* Círculo verde pulsante */}
-              <span>Sincronizado con navPath</span> {/* Texto de estado de sincronización */}
-            </span> {/* Fin de contenedor de estado */}
-            {/* Abreviatura del territorio activo */}
-            <span className="font-mono text-emerald-400/80 font-bold">
-              {selectedProvince ? selectedProvince.abbreviation : 'ARG'} {/* Abreviatura de la provincia */}
-            </span> {/* Fin de texto de abreviatura */}
-          </div> {/* Fin de pie informativo */}
+                {/* BOTONES PESTAÑAS DE SUBMENÚ (CATEGORÍAS) */}
+                {!routeSearchQuery && (
+                  <div className="flex items-center space-x-1 overflow-x-auto no-scrollbar pb-1 border-b border-slate-800">
+                    {[
+                      { id: 'all', label: 'Todos' },
+                      { id: 'macro', label: '🌐 Macro' },
+                      { id: 'provinces', label: '🇦🇷 Provincias' },
+                      { id: 'municipalities', label: '🏢 Municipios' }
+                    ].map(tab => (
+                      <button
+                        key={tab.id}
+                        onClick={() => setActiveRouteSubmenu(tab.id as any)}
+                        className={`px-2 py-0.5 rounded-lg text-[10px] font-extrabold whitespace-nowrap transition-all cursor-pointer ${
+                          activeRouteSubmenu === tab.id
+                            ? 'bg-emerald-500/20 text-emerald-300 border border-emerald-500/50'
+                            : 'bg-slate-900 text-slate-400 hover:text-slate-200 border border-transparent'
+                        }`}
+                      >
+                        {tab.label}
+                      </button>
+                    ))}
+                  </div>
+                )}
+
+                {/* CONTENIDO DEL SUBMENÚ (LISTA CON SCROLL) */}
+                <div className="max-h-64 overflow-y-auto space-y-2 pr-1 no-scrollbar text-xs">
+                  {/* SI SE ESTÁ BUSCANDO CON LA LUPITA / IA */}
+                  {routeSearchQuery ? (
+                    <div className="space-y-1">
+                      <span className="text-[9px] text-slate-500 uppercase font-extrabold tracking-widest px-1 block mb-1">
+                        Resultados de Búsqueda Inteligente ({routeSearchQuery})
+                      </span>
+                      {(() => {
+                        const query = routeSearchQuery.toLowerCase();
+                        // Filtrar macro
+                        const matchedMacro = mapLevels.filter(l => l.name.toLowerCase().includes(query) || l.id.toLowerCase().includes(query));
+                        // Filtrar provincias
+                        const matchedProvs = Object.values(mockProvincesData).filter(p => p.name.toLowerCase().includes(query) || p.abbreviation.toLowerCase().includes(query));
+                        // Filtrar municipios
+                        const matchedMunis = (selectedProvince?.municipalities || []).filter(m => m.name.toLowerCase().includes(query) || m.id.toLowerCase().includes(query));
+
+                        const totalMatches = matchedMacro.length + matchedProvs.length + matchedMunis.length;
+
+                        if (totalMatches === 0) {
+                          return (
+                            <div className="p-3 text-center text-slate-500 text-xs">
+                              Sin coincidencias para "<span className="text-emerald-400 font-bold">{routeSearchQuery}</span>"
+                            </div>
+                          );
+                        }
+
+                        const handleSelectRouteValue = (val: string) => {
+                          if (val === 'world' || val === 'continent' || val === 'country' || val === 'province' || val === 'city' || val === 'neighborhood') {
+                            setActiveMapLevel(val);
+                            setSelectedSubdivisionId(null);
+                            if (onNavigateToNode) {
+                              const levelName = mapLevels.find(l => l.id === val)?.name || val;
+                              onNavigateToNode({ id: val, name: levelName, type: 'macro_level' });
+                            }
+                          } else if (mockProvincesData[val]) {
+                            setActiveMapLevel('country');
+                            const fullData = mockProvincesData[val];
+                            onSelectProvince(fullData);
+                            if (onNavigateToNode) {
+                              onNavigateToNode({ id: val, name: fullData.name, type: 'provincia' });
+                            }
+                            setSelectedSubdivisionId(null);
+                          } else {
+                            setSelectedSubdivisionId(val);
+                            const foundSub = selectedProvince.municipalities?.find(m => m.id === val);
+                            if (foundSub && onNavigateToNode) {
+                              onNavigateToNode({ id: val, name: foundSub.name, type: 'subdivision' });
+                            }
+                          }
+                          setIsRouteMenuOpen(false);
+                          setRouteSearchQuery('');
+                        };
+
+                        return (
+                          <div className="space-y-1">
+                            {matchedMacro.map(m => (
+                              <button
+                                key={m.id}
+                                onClick={() => handleSelectRouteValue(m.id)}
+                                className="w-full text-left p-2 rounded-lg bg-slate-900/80 hover:bg-emerald-500/20 border border-slate-800 hover:border-emerald-500/50 flex items-center justify-between text-slate-200 transition-colors cursor-pointer"
+                              >
+                                <span className="font-bold">🌐 {m.name}</span>
+                                <span className="text-[9px] text-slate-500 uppercase">Nivel Macro</span>
+                              </button>
+                            ))}
+                            {matchedProvs.map(p => (
+                              <button
+                                key={p.id}
+                                onClick={() => handleSelectRouteValue(p.id)}
+                                className="w-full text-left p-2 rounded-lg bg-slate-900/80 hover:bg-emerald-500/20 border border-slate-800 hover:border-emerald-500/50 flex items-center justify-between text-slate-200 transition-colors cursor-pointer"
+                              >
+                                <span className="font-bold">🇦🇷 {p.name} ({p.abbreviation})</span>
+                                <span className="text-[9px] text-emerald-400 font-bold">Provincia</span>
+                              </button>
+                            ))}
+                            {matchedMunis.map(m => (
+                              <button
+                                key={m.id}
+                                onClick={() => handleSelectRouteValue(m.id)}
+                                className="w-full text-left p-2 rounded-lg bg-slate-900/80 hover:bg-emerald-500/20 border border-slate-800 hover:border-emerald-500/50 flex items-center justify-between text-slate-200 transition-colors cursor-pointer"
+                              >
+                                <span className="font-bold">🔹 {m.name} ({m.value}%)</span>
+                                <span className="text-[9px] text-sky-400 font-bold">Municipio</span>
+                              </button>
+                            ))}
+                          </div>
+                        );
+                      })()}
+                    </div>
+                  ) : (
+                    /* NAVEGACIÓN NORMAL CON SUBMENÚS CATEGORIZADOS */
+                    <div className="space-y-2">
+                      {(() => {
+                        const handleSelectRouteValue = (val: string) => {
+                          if (val === 'world' || val === 'continent' || val === 'country' || val === 'province' || val === 'city' || val === 'neighborhood') {
+                            setActiveMapLevel(val);
+                            setSelectedSubdivisionId(null);
+                            if (onNavigateToNode) {
+                              const levelName = mapLevels.find(l => l.id === val)?.name || val;
+                              onNavigateToNode({ id: val, name: levelName, type: 'macro_level' });
+                            }
+                          } else if (mockProvincesData[val]) {
+                            setActiveMapLevel('country');
+                            const fullData = mockProvincesData[val];
+                            onSelectProvince(fullData);
+                            if (onNavigateToNode) {
+                              onNavigateToNode({ id: val, name: fullData.name, type: 'provincia' });
+                            }
+                            setSelectedSubdivisionId(null);
+                          } else {
+                            setSelectedSubdivisionId(val);
+                            const foundSub = selectedProvince.municipalities?.find(m => m.id === val);
+                            if (foundSub && onNavigateToNode) {
+                              onNavigateToNode({ id: val, name: foundSub.name, type: 'subdivision' });
+                            }
+                          }
+                          setIsRouteMenuOpen(false);
+                          setRouteSearchQuery('');
+                        };
+
+                        return (
+                          <>
+                            {/* SUBMENÚ 1: NIVELES DE ALCANCE MACRO */}
+                            {(activeRouteSubmenu === 'all' || activeRouteSubmenu === 'macro') && (
+                              <div className="bg-slate-900/60 rounded-xl border border-slate-800 p-2 space-y-1">
+                                <button
+                                  onClick={() => setExpandedSubcategory(expandedSubcategory === 'macro' ? null : 'macro')}
+                                  className="w-full flex items-center justify-between text-[10px] font-extrabold uppercase tracking-widest text-emerald-400 p-1 rounded hover:bg-slate-800/50 transition-colors cursor-pointer"
+                                >
+                                  <span>🌐 Niveles de Alcance Macro</span>
+                                  {expandedSubcategory === 'macro' ? <ChevronUp size={12} /> : <ChevronDown size={12} />}
+                                </button>
+
+                                {(expandedSubcategory === 'macro' || activeRouteSubmenu === 'macro') && (
+                                  <div className="space-y-0.5 pt-1">
+                                    {mapLevels.map(level => {
+                                      const isSelected = activeMapLevel === level.id;
+                                      const emoji = level.id === 'world' ? '🌎' : level.id === 'continent' ? '🗺️' : level.id === 'country' ? '🇦🇷' : level.id === 'province' ? '🏢' : '📍';
+                                      return (
+                                        <button
+                                          key={level.id}
+                                          onClick={() => handleSelectRouteValue(level.id)}
+                                          className={`w-full text-left p-1.5 rounded-lg flex items-center justify-between text-xs transition-all cursor-pointer ${
+                                            isSelected
+                                              ? 'bg-emerald-500/20 text-emerald-300 font-extrabold border border-emerald-500/40'
+                                              : 'hover:bg-slate-800/80 text-slate-300'
+                                          }`}
+                                        >
+                                          <span>{emoji} {level.name}</span>
+                                          {isSelected && <Check size={12} className="text-emerald-400" />}
+                                        </button>
+                                      );
+                                    })}
+                                  </div>
+                                )}
+                              </div>
+                            )}
+
+                            {/* SUBMENÚ 2: PROVINCIAS DE ARGENTINA (24 NODOS) */}
+                            {(activeRouteSubmenu === 'all' || activeRouteSubmenu === 'provinces') && (
+                              <div className="bg-slate-900/60 rounded-xl border border-slate-800 p-2 space-y-1">
+                                <button
+                                  onClick={() => setExpandedSubcategory(expandedSubcategory === 'provinces' ? null : 'provinces')}
+                                  className="w-full flex items-center justify-between text-[10px] font-extrabold uppercase tracking-widest text-emerald-400 p-1 rounded hover:bg-slate-800/50 transition-colors cursor-pointer"
+                                >
+                                  <span>🇦🇷 Provincias de Argentina (24 Nodos)</span>
+                                  {expandedSubcategory === 'provinces' ? <ChevronUp size={12} /> : <ChevronDown size={12} />}
+                                </button>
+
+                                {(expandedSubcategory === 'provinces' || activeRouteSubmenu === 'provinces') && (
+                                  <div className="space-y-0.5 pt-1 max-h-48 overflow-y-auto no-scrollbar">
+                                    {Object.values(mockProvincesData).map(prov => {
+                                      const isSelected = selectedProvince?.id === prov.id && !selectedSubdivisionId;
+                                      return (
+                                        <button
+                                          key={prov.id}
+                                          onClick={() => handleSelectRouteValue(prov.id)}
+                                          className={`w-full text-left p-1.5 rounded-lg flex items-center justify-between text-xs transition-all cursor-pointer ${
+                                            isSelected
+                                              ? 'bg-emerald-500/20 text-emerald-300 font-extrabold border border-emerald-500/40'
+                                              : 'hover:bg-slate-800/80 text-slate-300'
+                                          }`}
+                                        >
+                                          <span className="truncate">📍 {prov.name} ({prov.abbreviation})</span>
+                                          {isSelected && <Check size={12} className="text-emerald-400 shrink-0" />}
+                                        </button>
+                                      );
+                                    })}
+                                  </div>
+                                )}
+                              </div>
+                            )}
+
+                            {/* SUBMENÚ 3: SUBDIVISIONES / MUNICIPIOS */}
+                            {(activeRouteSubmenu === 'all' || activeRouteSubmenu === 'municipalities') && selectedProvince?.municipalities && selectedProvince.municipalities.length > 0 && (
+                              <div className="bg-slate-900/60 rounded-xl border border-slate-800 p-2 space-y-1">
+                                <button
+                                  onClick={() => setExpandedSubcategory(expandedSubcategory === 'municipalities' ? null : 'municipalities')}
+                                  className="w-full flex items-center justify-between text-[10px] font-extrabold uppercase tracking-widest text-sky-400 p-1 rounded hover:bg-slate-800/50 transition-colors cursor-pointer"
+                                >
+                                  <span>🏢 Subdivisiones de {selectedProvince.name}</span>
+                                  {expandedSubcategory === 'municipalities' ? <ChevronUp size={12} /> : <ChevronDown size={12} />}
+                                </button>
+
+                                {(expandedSubcategory === 'municipalities' || activeRouteSubmenu === 'municipalities') && (
+                                  <div className="space-y-0.5 pt-1 max-h-40 overflow-y-auto no-scrollbar">
+                                    {selectedProvince.municipalities.map(muni => {
+                                      const isSelected = selectedSubdivisionId === muni.id;
+                                      return (
+                                        <button
+                                          key={muni.id}
+                                          onClick={() => handleSelectRouteValue(muni.id)}
+                                          className={`w-full text-left p-1.5 rounded-lg flex items-center justify-between text-xs transition-all cursor-pointer ${
+                                            isSelected
+                                              ? 'bg-sky-500/20 text-sky-300 font-extrabold border border-sky-500/40'
+                                              : 'hover:bg-slate-800/80 text-slate-300'
+                                          }`}
+                                        >
+                                          <span className="truncate">🔹 {muni.name} ({muni.value}%)</span>
+                                          {isSelected && <Check size={12} className="text-sky-400 shrink-0" />}
+                                        </button>
+                                      );
+                                    })}
+                                  </div>
+                                )}
+                              </div>
+                            )}
+                          </>
+                        );
+                      })()}
+                    </div>
+                  )}
+                </div>
+
+                {/* PIE INFORMATIVO CON SINCRONIZACIÓN Y INDICADOR */}
+                <div className="flex items-center justify-between border-t border-slate-800 pt-1.5 text-[8.5px] text-slate-400">
+                  <span className="flex items-center space-x-1">
+                    <span className="w-1.5 h-1.5 bg-emerald-400 rounded-full animate-pulse" />
+                    <span>Sincronizado con navPath</span>
+                  </span>
+                  <span className="font-mono text-emerald-400/80 font-bold">
+                    {selectedProvince ? selectedProvince.abbreviation : 'ARG'}
+                  </span>
+                </div>
+              </motion.div>
+            )}
+          </AnimatePresence>
         </div> {/* Fin de contenedor del selector desplegable */}
 
         {/* Estado Vacío Informativo Banner cuando no hay vectores cargados para esta capa */}
@@ -697,7 +1177,10 @@ export default function InteractiveMap({
         <motion.svg
           id="argentina-svg-map"
           viewBox={dynamicViewBox}
-          className="w-full h-full max-h-[500px] select-none cursor-grab active:cursor-grabbing"
+          onPointerDown={handlePointerDownPan}
+          className={`w-full h-full max-h-[500px] select-none ${
+            isDraggingCanvas ? 'cursor-grabbing' : isPanToolActive ? 'cursor-grab' : 'cursor-default'
+          }`}
           style={{
             originX: 0.5,
             originY: 0.5,
@@ -757,10 +1240,10 @@ export default function InteractiveMap({
           {(activeMapLevel === 'country' || activeMapLevel === 'pais') ? (
             <g id="provinces-group">
               {activeProvincePaths.map((prov) => {
-                const val = getProvinceValue(prov.id, selectedMetric);
-                const isSelected = selectedProvince.id === prov.id;
-                const isHovered = hoveredProv === prov.id;
-                const fillHex = getColorForValue(val, selectedMetric);
+                const val = getProvinceValue(prov.id, selectedMetric); // Recupera el valor estadístico
+                const isSelected = selectedProvince.id === prov.id || selectedSubdivisionId === prov.id; // Evalúa si está seleccionado
+                const isHovered = hoveredProv === prov.id; // Estado hover
+                const fillHex = getColorForValue(val, selectedMetric); // Color de relleno por métrica
 
                 return (
                   <path
@@ -768,19 +1251,25 @@ export default function InteractiveMap({
                     id={`province-path-${prov.id}`}
                     d={prov.d}
                     fill={fillHex}
-                    stroke={isSelected ? '#10b981' : '#334155'}
-                    strokeWidth={isSelected ? 3.5 : 2}
+                    vectorEffect="non-scaling-stroke"
+                    stroke={isSelected ? '#10b981' : '#334155'} // Resaltado verde emerald en selección
+                    strokeWidth={isSelected ? 1.5 : 0.6} // Grosor fino responsivo en pantalla sin importar el zoom
                     className="transition-all duration-150 cursor-pointer"
-                    onClick={() => {
+                    onClick={() => { // REGLA 2: Clic simple SOLO selecciona para inspección en el DataPanel (Micro Vista)
                       const fullData = mockProvincesData[prov.id] || {
                         id: prov.id,
                         name: prov.name,
                         abbreviation: prov.id.substring(0, 3).toUpperCase(),
                         municipalities: []
                       };
-                      onSelectProvince(fullData as ProvinceData);
-                      // El clic directo en el SVG inspecciona la provincia actualizando selectedProvince
-                      // sin cambiar activeMapLevel para preservar la vista del mapa de Argentina y el mini-mapa inferior.
+                      onSelectProvince(fullData as ProvinceData); // Actualiza la provincia seleccionada
+                      setSelectedSubdivisionId(prov.id); // Establece el id seleccionado sin cambiar el mapa
+                    }}
+                    onDoubleClick={() => { // REGLA 2: Doble clic realiza el Drill-Down (avanza de nivel y limpia selección)
+                      if (onNavigateToNode) { // Si existe la función de navegación jerárquica
+                        onNavigateToNode({ id: prov.id, name: prov.name, type: 'provincia' }); // Navega al nivel provincia
+                      }
+                      setSelectedSubdivisionId(null); // Resetea la selección para la vista Macro del nuevo nivel
                     }}
                     onMouseEnter={() => setHoveredProv(prov.id)}
                     onMouseLeave={() => setHoveredProv(null)}
@@ -804,23 +1293,24 @@ export default function InteractiveMap({
                   d={selectedProvincePath}
                   fill="rgba(30, 41, 59, 0.1)"
                   stroke="rgba(148, 163, 184, 0.3)"
-                  strokeWidth={2}
+                  strokeWidth={0.8}
+                  vectorEffect="non-scaling-stroke"
                   className="pointer-events-none"
                 />
               )}
 
-              {/* Si la provincia tiene subdivisiones con trazo vectorial, las dibuja individualmente */}
+              {/* REGLA 3: Renderizado Fractal - Dibuja solo los sub-nodos pertenecientes al nivel activo */}
               {validMunicipalities.length > 0 ? (
                 (selectedProvince.municipalities || []).map((muni) => { // Recorre el listado de municipios o subdivisiones
                   if (muni.paused || !muni.d || !muni.d.trim()) return null; // Solo renderiza si tiene un path SVG válido
-                  const dPath = muni.d;
+                  const dPath = muni.d; // Comando d del polígono SVG
                   const isSelected = selectedSubdivisionId === muni.id; // Verifica si está seleccionado
                   const isHovered = hoveredMuni === muni.id; // Verifica si el puntero está encima
                   const val = muni.value; // Recupera el valor asignado
                   
                   const fillHex = muni.visualStyles?.fillColor || muni.color || getColorForValue(val, selectedMetric); // Color de relleno
-                  const strokeHex = isSelected ? '#f59e0b' : (muni.visualStyles?.strokeColor || '#334155'); // Color de contorno
-                  const strokeW = isSelected ? dynamicStrokeUnit * 2.5 : (muni.visualStyles?.strokeWidth !== undefined ? muni.visualStyles.strokeWidth : dynamicStrokeUnit);
+                  const strokeHex = isSelected ? '#f59e0b' : (muni.visualStyles?.strokeColor || '#334155'); // Color de contorno (dorado en selección)
+                  const strokeW = isSelected ? 1.5 : (muni.visualStyles?.strokeWidth !== undefined ? muni.visualStyles.strokeWidth : 0.6); // Grosor de contorno
 
                   return ( // Retorna el elemento vectorial del polígono
                     <path
@@ -829,17 +1319,21 @@ export default function InteractiveMap({
                       fill={fillHex}
                       stroke={strokeHex}
                       strokeWidth={strokeW}
+                      vectorEffect="non-scaling-stroke"
                       className="transition-all duration-150 cursor-pointer animate-fade-in"
-                      onClick={() => {
-                        setSelectedSubdivisionId(muni.id);
-                        setEditSubName(muni.name);
-                        setEditSubVal(muni.value);
-                        setEditSubPct(muni.percentage);
-                        if (!showManager) setShowManager(true);
-                        setManagerTab('palette');
-                        if (onNavigateToNode) {
-                          onNavigateToNode({ id: muni.id, name: muni.name, type: 'subdivision' });
+                      onClick={() => { // REGLA 2: Clic simple selecciona el municipio/subdivisión para la Micro Vista en DataPanel
+                        setSelectedSubdivisionId(muni.id); // Selecciona la subdivisión activa sin cambiar el mapa
+                        setEditSubName(muni.name); // Carga el nombre en el editor
+                        setEditSubVal(muni.value); // Carga el valor en el editor
+                        setEditSubPct(muni.percentage); // Carga el porcentaje en el editor
+                        if (!showManager) setShowManager(true); // Abre el gestor si estaba oculto
+                        setManagerTab('palette'); // Establece la pestaña de paleta
+                      }}
+                      onDoubleClick={() => { // REGLA 2: Doble clic realiza Drill-Down hacia un nivel más profundo
+                        if (onNavigateToNode) { // Si existe la función de navegación
+                          onNavigateToNode({ id: muni.id, name: muni.name, type: 'subdivision' }); // Navega al sub-nodo
                         }
+                        setSelectedSubdivisionId(null); // Resetea la selección para la vista Macro del nuevo nivel
                       }}
                       onMouseEnter={() => setHoveredMuni(muni.id)}
                       onMouseLeave={() => setHoveredMuni(null)}
@@ -854,8 +1348,7 @@ export default function InteractiveMap({
                   );
                 })
               ) : selectedProvincePath ? (
-                /* REGLA ESTRICTA DEL LIENZO PRINCIPAL: Si la ruta activa es una Provincia y no tiene municipios vectoriales en BD,
-                   el Lienzo Principal (Mapa Grande) renderiza la SILUETA DE LA PROVINCIA ACTIVA ocupando el mapa principal */
+                /* Silueta única de la región si no contiene subdivisiones registradas */
                 <path
                   key={`full-prov-main-${selectedProvince.id}`}
                   id={`full-province-main-path-${selectedProvince.id}`}
@@ -866,7 +1359,19 @@ export default function InteractiveMap({
                   className="transition-all duration-150 cursor-pointer animate-fade-in"
                   style={{ filter: 'drop-shadow(0px 4px 10px rgba(16, 185, 129, 0.4))' }}
                 />
-              ) : null}
+              ) : (
+                /* REGLA 3: Lienzo en blanco si no existen sub-nodos o trazados vectoriales registrados */
+                <g id="empty-canvas-notice">
+                  <text
+                    x="480"
+                    y="480"
+                    textAnchor="middle"
+                    className="fill-slate-500 font-sans text-sm font-semibold tracking-wide"
+                  >
+                    Lienzo en blanco - Sin sub-nodos registrados para este nivel
+                  </text>
+                </g>
+              )}
             </g>
           )}
 
@@ -1355,177 +1860,194 @@ export default function InteractiveMap({
           )}
         </AnimatePresence>
 
-        {/* Minimapa de municipios/regiones */}
-        <div className="flex flex-col md:flex-row gap-4 items-center">
-          {/* El mini-mapa del municipio en sí */}
-          <div className="relative w-full md:w-1/2 h-44 bg-slate-950 rounded border border-slate-800 overflow-hidden flex items-center justify-center p-2">
-            {(() => {
-              // REGLA ESTRICTA DE ASIGNACIÓN DE VISTAS PARA EL RECUADRO SECUNDARIO (MAPA CHICO ABAJO):
-              // 1. Cuando el nivel activo es PAÍS (activeMapLevel === 'country' || 'pais'):
-              //    El Mapa Principal muestra Argentina completa.
-              //    El Recuadro Chico muestra la provincia seleccionada (selectedProvince).
-              // 2. Cuando el nivel activo es PROVINCIA (activeMapLevel !== 'country'):
-              //    El Mapa Principal YA muestra la provincia activa en el lienzo grande.
-              //    El Recuadro Chico debe buscar los municipios o subdivisiones hijas.
-              //    Como aún no existen municipios en la base de datos (array vacío o sin sub-hijos),
-              //    el Recuadro Chico DEBE RENDERIZAR EL LIENZO EN BLANCO VACÍO, sin dibujar nada encima.
+        {/* Minimapa de municipios/regiones: SOLO APARECE SI HAY UN ELEMENTO/DIVISIÓN SELECCIONADO EN EL MAPA PRINCIPAL */}
+        {!selectedSubdivisionId ? (
+          /* MENSAJE EXPLICATIVO SI NO HAY NINGUNA SUBDIVISIÓN NI ELEMENTO SELECCIONADO EN EL MAPA PRINCIPAL */
+          <div className="w-full p-4 bg-slate-950/70 border border-slate-800/80 rounded-2xl flex flex-col items-center justify-center text-center space-y-2.5 py-6">
+            <div className="p-3 bg-emerald-500/10 border border-emerald-500/20 rounded-full text-emerald-400">
+              <MousePointerClick size={22} />
+            </div>
+            <p className="text-xs font-black text-slate-200 uppercase tracking-wider">
+              Selecciona un elemento en el Mapa Principal
+            </p>
+            <p className="text-[11px] text-slate-400 max-w-md leading-relaxed font-medium">
+              Haz clic sobre cualquier división, provincia, departamento u objeto dentro del mapa principal arriba para inspeccionar sus detalles, zonificación vectorial aislada y métricas en esta sección.
+            </p>
+          </div>
+        ) : (
+          /* SI HAY UN ELEMENTO/DIVISIÓN SELECCIONADO, MUESTRA EL DETALLE COMPLETO Y EL MINIMAPA */
+          <div className="flex flex-col md:flex-row gap-4 items-center w-full">
+            {/* El mini-mapa del municipio en sí */}
+            <div className="relative w-full md:w-1/2 h-44 bg-slate-950 rounded border border-slate-800 overflow-hidden flex items-center justify-center p-2">
+              {(() => {
+                // REGLA ESTRICTA DE RENDERIZADO PARA EL RECUADRO SECUNDARIO (MINIMAPA ABAJO EN "ZONIFICACIÓN"):
+                // Si el usuario selecciona una división interna (provincia/municipio/región), este minimapa extrae su trazado SVG y lo renderiza de forma aislada y enfocada.
 
-              const isCountryLevel = activeMapLevel === 'country' || activeMapLevel === 'pais'; // Evalúa si estamos en nivel País
-              const activeSubdivisions = (selectedProvince.municipalities || []).filter(m => !m.paused && m.d && m.d.trim().length > 0); // Filtra municipios vectoriales válidos
+                // 1. Obtiene las subdivisiones activas registradas en el estado local de la provincia
+                const activeSubdivisions = (selectedProvince.municipalities || []).filter(m => !m.paused);
+                
+                // 2. Busca si la subdivisión seleccionada coincide por ID o Nombre en las subdivisiones locales
+                const selectedMuni = activeSubdivisions.find(m => 
+                  m.id === selectedSubdivisionId || 
+                  (selectedSubdivisionId && m.name.toLowerCase() === selectedSubdivisionId.toLowerCase())
+                );
 
-              // Caso A: Si estamos navegando en Nivel Provincia y no hay municipios sub-hijos cargados en BD
-              if (!isCountryLevel && activeSubdivisions.length === 0) { // Si la ruta es Provincia y no hay sub-municipios
-                return ( // Devuelve el Lienzo en Blanco Vacío
-                  <svg viewBox="0 0 400 250" className="w-full h-full max-h-40 p-2"> {/* SVG limpio del recuadro chico */}
-                    <defs> {/* Definiciones de la malla técnica */}
-                      <pattern id="mini-blank-grid" width="20" height="20" patternUnits="userSpaceOnUse"> {/* Trama técnica de puntos */}
-                        <path d="M 20 0 L 0 0 0 20" fill="none" stroke="rgba(51, 65, 85, 0.2)" strokeWidth="0.5" /> {/* Trazado de rejilla */}
-                      </pattern> {/* Fin de patrón */}
-                    </defs> {/* Fin de defs */}
-                    <rect width="100%" height="100%" fill="url(#mini-blank-grid)" /> {/* Fondo de rejilla técnica */}
-                    <g className="pointer-events-none select-none"> {/* Grupo de textos informativos */}
-                      <text
-                        x="200"
-                        y="115"
-                        textAnchor="middle"
-                        fill="#64748b"
-                        fontSize="11"
-                        fontWeight="bold"
-                        className="font-sans"
-                      >
-                        Lienzo en Blanco (Sin Desglose)
-                      </text>
-                      <text
-                        x="200"
-                        y="135"
-                        textAnchor="middle"
-                        fill="#475569"
-                        fontSize="9"
-                        className="font-sans"
-                      >
-                        No existen municipios o subdivisiones cargadas
-                      </text>
-                    </g>
-                  </svg>
-                ); // Fin de retorno de Lienzo en Blanco
-              } // Fin del condicional de Lienzo en Blanco
+                // 3. Búsqueda del vector SVG (d) correspondiente a la selección de selectedProvince.municipalities:
+                let pathToRender: string | null = selectedMuni?.d && selectedMuni.d.trim().length > 0 ? selectedMuni.d : null;
+                let targetName = selectedMuni?.name || '';
+                let targetColor = selectedMuni?.color || (selectedMuni ? getColorForValue(selectedMuni.value, selectedMetric) : '#10b981');
 
-              // Caso B: Cuando la ruta es Nivel País o existen sub-polígonos creados
-              const bbox = getPathBBox(selectedProvincePath); // Bounding Box del trazado provincial
-              const padding = 15; // Margen de holgura
-              const viewBoxStr = bbox && bbox.width > 0 && bbox.height > 0 // Generación condicional de ViewBox
-                ? `${bbox.x - padding} ${bbox.y - padding} ${bbox.width + padding * 2} ${bbox.height + padding * 2}`
-                : "0 0 400 250"; // Fallback seguro
-              
-              const cx = bbox ? bbox.x + bbox.width / 2 : 200; // Centro relativo X
-              const cy = bbox ? bbox.y + bbox.height / 2 : 125; // Centro relativo Y
-              const groupTransform = `translate(${miniPanX}, ${miniPanY}) translate(${cx}, ${cy}) scale(${miniScale}) translate(${-cx}, ${-cy})`; // Transformaciones
+                // Si no se encontró d en selectedMuni, busca en provincePaths como respaldo
+                if (!pathToRender) {
+                  const foundProvPath = provincePaths.find(p => 
+                    p.id === selectedSubdivisionId || 
+                    p.name.toLowerCase() === selectedSubdivisionId.toLowerCase() ||
+                    (selectedMuni && p.name.toLowerCase() === selectedMuni.name.toLowerCase()) ||
+                    (selectedMuni && p.id.toLowerCase() === selectedMuni.id.toLowerCase())
+                  );
+                  if (foundProvPath && foundProvPath.d) {
+                    pathToRender = foundProvPath.d;
+                    targetName = foundProvPath.name;
+                  }
+                }
 
-              return ( // Renderiza el Mapa Secundario con la silueta o sub-municipios
-                <svg viewBox={viewBoxStr} className="w-full h-full max-h-40 p-2">
-                  {/* Silueta de la provincia seleccionada como guía de fondo cuando estamos en Nivel País */}
-                  {selectedProvincePath && (
+                // 4. Si no se encontró ninguna selección o trazado vectorial válido, muestra el lienzo técnico listo:
+                if (!pathToRender) {
+                  return (
+                    <svg viewBox="0 0 400 250" className="w-full h-full max-h-40 p-2">
+                      <defs>
+                        <pattern id="mini-blank-grid" width="20" height="20" patternUnits="userSpaceOnUse">
+                          <path d="M 20 0 L 0 0 0 20" fill="none" stroke="rgba(51, 65, 85, 0.2)" strokeWidth="0.5" />
+                        </pattern>
+                      </defs>
+                      <rect width="100%" height="100%" fill="url(#mini-blank-grid)" />
+                      <g className="pointer-events-none select-none">
+                        <text x="200" y="115" textAnchor="middle" fill="#64748b" fontSize="11" fontWeight="bold" className="font-sans">
+                          Lienzo en Blanco (Sin Selección)
+                        </text>
+                        <text x="200" y="135" textAnchor="middle" fill="#475569" fontSize="9" className="font-sans">
+                          Haz clic en una división en el mapa principal para ver su zonificación
+                        </text>
+                      </g>
+                    </svg>
+                  );
+                }
+
+                // 5. Cálculo exacto del Bounding Box de la pieza vectorial para centrado y escalado dinámico en la caja de Zonificación
+                const bbox = getPathBBox(pathToRender);
+                const padding = (bbox && bbox.width > 0 && bbox.height > 0) ? Math.max(bbox.width, bbox.height) * 0.08 : 15;
+                const viewBoxStr = (bbox && bbox.width > 0 && bbox.height > 0)
+                  ? `${bbox.x - padding} ${bbox.y - padding} ${bbox.width + padding * 2} ${bbox.height + padding * 2}`
+                  : "0 0 400 250";
+
+                const cx = bbox ? bbox.x + bbox.width / 2 : 200;
+                const cy = bbox ? bbox.y + bbox.height / 2 : 125;
+                const groupTransform = `translate(${miniPanX}, ${miniPanY}) translate(${cx}, ${cy}) scale(${miniScale}) translate(${-cx}, ${-cy})`;
+
+                return (
+                  <svg viewBox={viewBoxStr} className="w-full h-full max-h-40 p-2 animate-fadeIn">
                     <path
-                      d={selectedProvincePath}
-                      fill="rgba(16, 185, 129, 0.05)"
-                      stroke="rgba(16, 185, 129, 0.25)"
-                      strokeWidth={1.5}
-                      strokeDasharray="4 3"
+                      d={pathToRender}
+                      fill={targetColor}
+                      stroke="#f59e0b"
+                      strokeWidth={2}
                       transform={groupTransform}
-                      className="pointer-events-none"
+                      className="transition-all duration-200 cursor-pointer hover:brightness-125 drop-shadow-lg"
                     />
-                  )}
 
-                  {/* Grupo de divisiones de municipios si existen polígonos sub-hijos */}
-                  {activeSubdivisions.length > 0 && (
-                    <g id="minimap-municipalities-group" transform={groupTransform}>
-                      {activeSubdivisions.map((muni) => {
-                        const isHovered = hoveredMuni === muni.id;
-                        const isSelected = selectedSubdivisionId === muni.id;
-                        const color = muni.color || getColorForValue(muni.value, selectedMetric);
+                    {/* Si existen sub-departamentos o municipios con vectores vectoriales asignados, los dibuja de fondo */}
+                    {activeSubdivisions.length > 0 && activeSubdivisions.some(m => m.d && m.d.trim().length > 0) && (
+                      <g id="minimap-municipalities-group" transform={groupTransform}>
+                        {activeSubdivisions.map((muni) => {
+                          if (!muni.d) return null;
+                          const isHovered = hoveredMuni === muni.id;
+                          const isSelected = selectedSubdivisionId === muni.id;
+                          const color = muni.color || getColorForValue(muni.value, selectedMetric);
 
-                        return (
-                          <path
-                            key={muni.id}
-                            d={muni.d!}
-                            fill={color}
-                            stroke={isSelected ? '#f59e0b' : 'rgba(30, 41, 59, 0.5)'}
-                            strokeWidth={isSelected ? 2 : 1}
-                            className="transition-all duration-150 cursor-pointer"
-                            onClick={() => {
-                              setSelectedSubdivisionId(muni.id);
-                              setEditSubName(muni.name);
-                              setEditSubVal(muni.value);
-                              setEditSubPct(muni.percentage);
-                              if (!showManager) setShowManager(true);
-                              setManagerTab('palette');
-                            }}
-                            onMouseEnter={() => setHoveredMuni(muni.id)}
-                            onMouseLeave={() => setHoveredMuni(null)}
-                            style={{
-                              filter: (isHovered || isSelected) ? 'brightness(1.25) drop-shadow(0px 2px 5px rgba(0,0,0,0.4))' : 'none'
-                            }}
-                          />
-                        );
-                      })}
-                    </g>
-                  )}
-                </svg>
-              );
-            })()}
+                          return (
+                            <path
+                              key={muni.id}
+                              d={muni.d}
+                              fill={color}
+                              stroke={isSelected ? '#f59e0b' : 'rgba(30, 41, 59, 0.5)'}
+                              strokeWidth={isSelected ? 2 : 1}
+                              className="transition-all duration-150 cursor-pointer"
+                              onClick={() => {
+                                setSelectedSubdivisionId(muni.id);
+                                setEditSubName(muni.name);
+                                setEditSubVal(muni.value);
+                                setEditSubPct(muni.percentage);
+                                if (!showManager) setShowManager(true);
+                                setManagerTab('palette');
+                              }}
+                              onMouseEnter={() => setHoveredMuni(muni.id)}
+                              onMouseLeave={() => setHoveredMuni(null)}
+                              style={{
+                                filter: (isHovered || isSelected) ? 'brightness(1.25) drop-shadow(0px 2px 5px rgba(0,0,0,0.4))' : 'none'
+                              }}
+                            />
+                          );
+                        })}
+                      </g>
+                    )}
+                  </svg>
+                );
+              })()}
 
-            {/* Floating details inside the minimap */}
-            <div className="absolute top-2 left-2 flex flex-col space-y-0.5 bg-slate-900/90 backdrop-blur-md p-1 rounded border border-slate-800 shadow-lg pointer-events-none">
-              <span className="text-[8px] text-slate-400 uppercase font-bold">Zonificación</span>
-              <div className="flex items-center space-x-1">
-                <span className="w-1.5 h-1.5 bg-emerald-500 rounded-full" />
-                <span className="text-[9px] text-slate-300 font-bold">
-                  {selectedProvince.municipalities.filter(m => !m.paused).length} Activas
-                </span>
+              {/* Detalles Flotantes en la esquina superior izquierda del recuadro de Zonificación */}
+              <div className="absolute top-2 left-2 flex flex-col space-y-0.5 bg-slate-900/90 backdrop-blur-md p-1.5 rounded border border-slate-800 shadow-lg pointer-events-none z-10">
+                <span className="text-[8px] text-slate-400 uppercase font-bold tracking-widest">Zonificación</span>
+                <div className="flex items-center space-x-1">
+                  <span className="w-1.5 h-1.5 bg-emerald-500 rounded-full animate-pulse" />
+                  <span className="text-[9px] text-slate-200 font-extrabold truncate max-w-[140px]">
+                    {selectedSubdivisionId
+                      ? (selectedProvince.municipalities.find(m => m.id === selectedSubdivisionId || m.name.toLowerCase() === selectedSubdivisionId.toLowerCase())?.name || selectedSubdivisionId)
+                      : selectedProvince.name}
+                  </span>
+                </div>
               </div>
+
+              {/* Hover details over the municipality */}
+              <AnimatePresence>
+                {hoveredMuni && (
+                  <motion.div
+                    initial={{ opacity: 0, scale: 0.95 }}
+                    animate={{ opacity: 1, scale: 1 }}
+                    exit={{ opacity: 0, scale: 0.95 }}
+                    className="absolute bottom-2 left-2 right-2 bg-slate-950/95 text-slate-100 px-2 py-1 rounded border border-slate-800 text-[10px] pointer-events-none flex justify-between items-center shadow-xl"
+                  >
+                    <span className="font-bold">
+                      {selectedProvince.municipalities.find(m => m.id === hoveredMuni)?.name}
+                    </span>
+                    <span className="font-semibold text-emerald-400">
+                      {selectedProvince.municipalities.find(m => m.id === hoveredMuni)?.value}% ({selectedProvince.municipalities.find(m => m.id === hoveredMuni)?.percentage}% representatividad)
+                    </span>
+                  </motion.div>
+                )}
+              </AnimatePresence>
             </div>
 
-            {/* Hover details over the municipality */}
-            <AnimatePresence>
-              {hoveredMuni && (
-                <motion.div
-                  initial={{ opacity: 0, scale: 0.95 }}
-                  animate={{ opacity: 1, scale: 1 }}
-                  exit={{ opacity: 0, scale: 0.95 }}
-                  className="absolute bottom-2 left-2 right-2 bg-slate-950/95 text-slate-100 px-2 py-1 rounded border border-slate-800 text-[10px] pointer-events-none flex justify-between items-center shadow-xl"
-                >
-                  <span className="font-bold">
-                    {selectedProvince.municipalities.find(m => m.id === hoveredMuni)?.name}
-                  </span>
-                  <span className="font-semibold text-emerald-400">
-                    {selectedProvince.municipalities.find(m => m.id === hoveredMuni)?.value}% ({selectedProvince.municipalities.find(m => m.id === hoveredMuni)?.percentage}% representatividad)
-                  </span>
-                </motion.div>
-              )}
-            </AnimatePresence>
-          </div>
-
-          {/* List of Regions / Municipalities with progress bars */}
-          <div className="flex-1 w-full flex flex-col space-y-2 h-44 overflow-y-auto pr-1">
-            <span className="text-[10px] text-slate-500 font-bold uppercase tracking-widest">
-              {activeMapLevel === 'world' || activeMapLevel === 'continent'
-                ? `Distribución por Países de ${metricLabels[selectedMetric]}`
-                : activeMapLevel === 'country'
-                ? `Distribución Provincial de ${metricLabels[selectedMetric]}`
-                : `Distribución Regional de ${metricLabels[selectedMetric]}`}
-            </span>
-            <div className="space-y-2">
-              {selectedProvince.municipalities.map((muni) => (
-                <div 
-                  key={muni.id} 
-                  className={`flex flex-col space-y-0.5 transition-opacity duration-200 cursor-pointer p-1 rounded ${
-                    selectedSubdivisionId === muni.id ? 'bg-slate-900/50 border border-slate-800' : 'hover:bg-slate-950/30'
-                  } ${muni.paused ? 'opacity-30' : 'opacity-100'}`}
-                  onClick={() => {
-                    setSelectedSubdivisionId(muni.id);
-                    setEditSubName(muni.name);
-                    setEditSubVal(muni.value);
-                    setEditSubPct(muni.percentage);
+            {/* List of Regions / Municipalities with progress bars */}
+            <div className="flex-1 w-full flex flex-col space-y-2 h-44 overflow-y-auto pr-1">
+              <span className="text-[10px] text-slate-500 font-bold uppercase tracking-widest">
+                {activeMapLevel === 'world' || activeMapLevel === 'continent'
+                  ? `Distribución por Países de ${metricLabels[selectedMetric]}`
+                  : activeMapLevel === 'country'
+                  ? `Distribución Provincial de ${metricLabels[selectedMetric]}`
+                  : `Distribución Regional de ${metricLabels[selectedMetric]}`}
+              </span>
+              <div className="space-y-2">
+                {selectedProvince.municipalities.map((muni) => (
+                  <div 
+                    key={muni.id} 
+                    className={`flex flex-col space-y-0.5 transition-opacity duration-200 cursor-pointer p-1 rounded ${
+                      selectedSubdivisionId === muni.id ? 'bg-slate-900/50 border border-slate-800' : 'hover:bg-slate-950/30'
+                    } ${muni.paused ? 'opacity-30' : 'opacity-100'}`}
+                    onClick={() => {
+                      setSelectedSubdivisionId(muni.id);
+                      setEditSubName(muni.name);
+                      setEditSubVal(muni.value);
+                      setEditSubPct(muni.percentage);
                     if (!showManager) setShowManager(true);
                     setManagerTab('palette');
                   }}
@@ -1558,7 +2080,43 @@ export default function InteractiveMap({
             </div>
           </div>
         </div>
+        )}
       </div>
+
+      {/* Modal Emergente para el Administrador de Paleta de Colores & Configuración de Dashboards */}
+      <AnimatePresence>
+        {showAdminModal && (
+          <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-950/80 backdrop-blur-md">
+            <motion.div
+              initial={{ opacity: 0, scale: 0.95, y: 10 }}
+              animate={{ opacity: 1, scale: 1, y: 0 }}
+              exit={{ opacity: 0, scale: 0.95, y: 10 }}
+              className="bg-slate-950 border border-slate-800 rounded-2xl w-full max-w-5xl max-h-[90vh] overflow-hidden flex flex-col shadow-2xl"
+            >
+              {/* Encabezado del Modal con botón de cierre */}
+              <div className="flex items-center justify-between px-6 py-4 border-b border-slate-800 bg-slate-900/60">
+                <div className="flex items-center space-x-2">
+                  <Sliders className="w-5 h-5 text-emerald-400" />
+                  <h2 className="text-base font-bold text-slate-100">
+                    Administrador de Paleta de Colores & Configuración de Dashboard
+                  </h2>
+                </div>
+                <button
+                  onClick={() => setShowAdminModal(false)}
+                  className="text-slate-400 hover:text-slate-100 p-1.5 rounded-lg hover:bg-slate-800 transition-colors cursor-pointer"
+                >
+                  <X className="w-5 h-5" />
+                </button>
+              </div>
+
+              {/* Cuerpo del Modal renderizando AdminDashboardBuilder */}
+              <div className="flex-1 overflow-y-auto p-6">
+                <AdminDashboardBuilder onClose={() => setShowAdminModal(false)} />
+              </div>
+            </motion.div>
+          </div>
+        )}
+      </AnimatePresence>
     </div>
   );
 }

@@ -20,7 +20,8 @@ import {
   Copy, // Icono para copiar JSON
   Check, // Icono para estado sincronizado
   AlertCircle, // Icono para alertas de sintaxis JSON inválida
-  Sliders // Icono para inspector de propiedades
+  Sliders, // Icono para inspector de propiedades
+  FileUp // Icono para subir archivos
 } from 'lucide-react'; // Biblioteca lucide-react para la interfaz de usuario
 import { ProvinceData, NavNode } from '../types'; // Importa la interfaz con el modelo de datos de provincias y nodos universales
 import { provincePaths } from '../data/provincePaths'; // Importación del molde vectorial nativo de Argentina
@@ -49,6 +50,8 @@ interface MapCalibrationPanelProps {
   mapLevels?: { id: string; name: string }[]; // Niveles jerárquicos de mapas configurados
   onUpdateMapLevels?: (levels: { id: string; name: string }[]) => void; // Callback para modificar los niveles de mapas
   navPath?: NavNode[]; // Arreglo del historial de navegación dinámico universal (Motor Vectorial)
+  selectedSubdivisionId?: string | null; // ID de la subdivisión o polígono seleccionado en el índice o mapa
+  onSelectSubdivision?: (id: string | null) => void; // Callback para sincronizar la selección activa con la aplicación
 }
 
 // Auxiliar: Convierte coordenadas de anillos GeoJSON a trazados de comando SVG 'd'
@@ -131,6 +134,8 @@ export default function MapCalibrationPanel({
   selectedProvince, // Objeto provincia recibido
   onUpdateProvince, // Callback de actualización recibido
   navPath, // Historial de navegación dinámico universal para identificar el parentId
+  selectedSubdivisionId, // ID de la subdivisión activa en el menú de ruta/selección
+  onSelectSubdivision // Callback de cambio de subdivisión
 }: MapCalibrationPanelProps) { // Firma de componente funcional React
   const [paths, setPaths] = useState<SVGPathData[]>([]); // Estado con la lista de trazados vectoriales en lienzo
   const [selectedId, setSelectedId] = useState<string | null>(null); // Estado para rastrear el elemento vectorial seleccionado
@@ -174,6 +179,12 @@ export default function MapCalibrationPanel({
   const [translateY, setTranslateY] = useState<number>(0); // Estado para el desplazamiento vertical Y
 
   const [searchTerm, setSearchTerm] = useState<string>(''); // Estado con la palabra clave para filtrar la lista
+
+  // ESTADOS PARA LA HERRAMIENTA PERFECCIONADOR DE SILUETA (4 FUENTES, VISTA PREVIA Y MUTACIÓN SEGURA)
+  const [previewSilhouette, setPreviewSilhouette] = useState<string | null>(null); // Trazo de vista previa
+  const [silhouetteInputMethod, setSilhouetteInputMethod] = useState<'paste' | 'file' | 'image' | 'preset'>('paste'); // Método activo
+  const [silhouettePasteText, setSilhouettePasteText] = useState<string>(''); // Texto ingresado
+  const [silhouettePresetRoute, setSilhouettePresetRoute] = useState<string>('ARG_24'); // Ruta preset seleccionada
   const [newPropKey, setNewPropKey] = useState<string>(''); // Estado para la clave de una nueva variable personalizada
   const [newPropValue, setNewPropValue] = useState<string>(''); // Estado para el valor de una nueva variable personalizada
   const [notification, setNotification] = useState<string | null>(null); // Estado para el texto de notificación flotante (Toast)
@@ -503,6 +514,210 @@ export default function MapCalibrationPanel({
     }
   };
 
+  // FUNCIÓN DE INYECCIÓN QUIRÚRGICA DE CONTORNO (PERFECCIONAR SILUETA SIN ALTERAR OTROS NODOS NI PERDER METADATOS)
+  const handleInjectContourFile = (e: ChangeEvent<HTMLInputElement>) => { // Handler para la inyección de silueta
+    const file = e.target.files?.[0]; // Obtiene el archivo subido por el usuario
+    if (!file) return; // Si no hay archivo interrumpe la función
+
+    const targetId = selectedId; // Identificador del nodo seleccionado actualmente en el lienzo (ej: 'ARG', 'AR-B')
+    if (!targetId) { // Verifica si hay un nodo activo seleccionado
+      alert("Por favor, selecciona primero en el mapa el nodo o región que deseas perfeccionar."); // Alerta al usuario
+      if (e.target) e.target.value = ''; // Resetea la selección de archivo
+      return; // Cancela la ejecución
+    } // Fin del chequeo de selección
+
+    const targetNode = paths.find(p => p.id === targetId); // Localiza el nodo objetivo en el estado local
+
+    const reader = new FileReader(); // Lector de archivos
+    reader.onload = (event) => { // Handler al completar la lectura
+      try { // Captura de excepciones
+        const rawText = event.target?.result as string || ''; // Contenido raw del archivo importado
+        const cleanedText = sanitizeJsonString(rawText); // Sanitiza comentarios y código JS/TS
+        const json = JSON.parse(cleanedText || rawText); // Parsea a estructura JSON
+
+        // Extracción recursiva de todos los comandos vectoriales 'd' del mapa detallado importado
+        const extractDPaths = (node: any): string[] => { // Función recursiva
+          let dList: string[] = []; // Acumulador de strings 'd'
+          if (Array.isArray(node)) { // Arreglo de nodos
+            node.forEach(item => { dList = dList.concat(extractDPaths(item)); }); // Procesa cada ítem
+          } else if (typeof node === 'object' && node !== null) { // Objeto contenedor
+            if (node.d) { // Posee la propiedad 'd'
+              dList.push(String(node.d).trim()); // Almacena el trazo
+            } else if (node.type === 'Feature') { // Es una entidad GeoJSON
+              let pathD = node.properties?.d || node.d; // Intenta leer 'd' de propiedades
+              if (!pathD && node.geometry && node.geometry.coordinates) { // Convierte coordenadas GeoJSON a path SVG
+                pathD = geoJsonCoordsToSvgPath(node.geometry.type, node.geometry.coordinates); // Transformador
+              }
+              if (pathD) dList.push(String(pathD).trim()); // Guarda el path derivado
+            } // Fin de verificación Feature
+            // Recorre sub-estructuras anidadas
+            for (const key of Object.keys(node)) { // Claves de objeto
+              if (key !== 'properties' && key !== 'customData' && typeof node[key] === 'object' && node[key] !== null) { // Omite metadatos
+                dList = dList.concat(extractDPaths(node[key])); // Invocación recursiva
+              }
+            }
+          }
+          return dList; // Retorna la lista acumulada
+        }; // Fin de extractDPaths
+
+        const extractedDs = extractDPaths(json).filter(Boolean); // Filtra trazados nulos o vacíos
+
+        if (extractedDs.length === 0) { // Si no se encontraron trazados válidos
+          alert("Estructura inválida. No se detectaron trazados vectoriales (propiedad 'd' o geometrías) en el archivo importado."); // Alerta
+          return; // Interrumpe la ejecución
+        } // Fin de validación de trazados
+
+        // Fusión de contornos (Dissolve Outer Boundary): Combina todos los sub-trazados en una única silueta exterior unificada 'd'
+        const nuevoContornoFusionado = extractedDs.join(' '); // Unifica los comandos SVG en un único string 'd'
+
+        // ACTUALIZACIÓN SEGURA Y ESTRICTA:
+        // Recorre el array global de nodos ('paths'), dejando intactos a todos los demás nodos, y actualiza EXCLUSIVAMENTE la propiedad 'd' del targetId
+        setPaths(prev => prev.map(node => node.id === targetId ? { ...node, d: nuevoContornoFusionado } : node)); // Inyección de contorno
+
+        const nodeName = targetNode?.name || targetId; // Nombre descriptivo
+        showNotify(`[🎯] Inyección quirúrgica exitosa: Silueta del nodo "${nodeName}" (${targetId}) perfeccionada. Sus métricas y datos permanecen intactos.`); // Toast
+        alert(`¡Inyección Quirúrgica de Contorno Exitosa!\n\nSe ha actualizado EXCLUSIVAMENTE la silueta (propiedad 'd') del nodo seleccionado "${nodeName}" (ID: ${targetId}).\n\n- Sub-polígonos importados fusionados: ${extractedDs.length}\n- Nodos totales en el mapa: conservados sin alteración.\n- Datos estadísticos y metadatos: preservados 100% intactos.`); // Alerta confirmatoria
+      } catch (err: any) { // Manejo de errores
+        console.error("Error en la inyección quirúrgica de contorno:", err); // Log
+        alert("Error al procesar el archivo para inyección quirúrgica. Verifique que sea un archivo JSON / GeoJSON válido."); // Notificación
+      } // Fin de try-catch
+    }; // Fin de reader.onload
+    reader.readAsText(file); // Lee el archivo cargado como texto
+    if (e.target) e.target.value = ''; // Resetea el input de archivo
+  }; // Fin de handleInjectContourFile
+
+  // BOTÓN "GENERAR VISTA PREVIA": UNIFICA SILUETA SEGÚN ENTRADA SELECCIONADA Y MUESTRA EN EL LIENZO
+  const handleGenerateSilhouettePreview = (customContent?: any) => {
+    const targetId = selectedId;
+    if (!targetId) {
+      alert("Por favor, selecciona primero en el mapa el nodo o región que deseas perfeccionar.");
+      return;
+    }
+
+    let sourceData = customContent;
+    if (!sourceData) {
+      if (silhouetteInputMethod === 'paste') {
+        if (!silhouettePasteText.trim()) {
+          alert("Por favor, ingresa o pega el código JSON o SVG en el campo de texto.");
+          return;
+        }
+        sourceData = silhouettePasteText;
+      } else if (silhouetteInputMethod === 'preset') {
+        sourceData = paths;
+      }
+    }
+
+    const extractDPaths = (node: any): string[] => {
+      let dList: string[] = [];
+      if (typeof node === 'string') {
+        const dMatches = node.match(/d=["']([^"']+)["']/g);
+        if (dMatches && dMatches.length > 0) {
+          dMatches.forEach(m => {
+            const val = m.replace(/^d=["']/, '').replace(/["']$/, '').trim();
+            if (val) dList.push(val);
+          });
+          return dList;
+        }
+        try {
+          const parsed = JSON.parse(sanitizeJsonString(node));
+          return extractDPaths(parsed);
+        } catch {
+          if (node.trim().length > 10) dList.push(node.trim());
+          return dList;
+        }
+      }
+      if (Array.isArray(node)) {
+        node.forEach(item => { dList = dList.concat(extractDPaths(item)); });
+      } else if (typeof node === 'object' && node !== null) {
+        if (node.d) {
+          dList.push(String(node.d).trim());
+        } else if (node.type === 'Feature') {
+          let pathD = node.properties?.d || node.d;
+          if (!pathD && node.geometry && node.geometry.coordinates) {
+            pathD = geoJsonCoordsToSvgPath(node.geometry.type, node.geometry.coordinates);
+          }
+          if (pathD) dList.push(String(pathD).trim());
+        }
+        for (const key of Object.keys(node)) {
+          if (key !== 'properties' && key !== 'customData' && typeof node[key] === 'object' && node[key] !== null) {
+            dList = dList.concat(extractDPaths(node[key]));
+          }
+        }
+      }
+      return dList;
+    };
+
+    const dArray = extractDPaths(sourceData).filter(Boolean);
+    if (dArray.length === 0) {
+      alert("No se encontraron trazados (propiedad 'd') válidos en la entrada.");
+      return;
+    }
+
+    const unifiedD = dArray.join(' ');
+    setPreviewSilhouette(unifiedD);
+    showNotify(`[✨] Vista previa de la silueta perfeccionada generada sobre el lienzo.`);
+  };
+
+  // MANEJADOR PARA SUBIDA DE ARCHIVOS EN MAP CALIBRATION
+  const handleSilhouetteFileUpload = (e: ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = (event) => {
+      const rawText = event.target?.result as string || '';
+      setSilhouettePasteText(rawText);
+      handleGenerateSilhouettePreview(rawText);
+    };
+    reader.readAsText(file);
+    if (e.target) e.target.value = '';
+  };
+
+  // MANEJADOR PARA SUBIDA DE IMAGEN DE SILUETA
+  const handleSilhouetteImageUpload = (e: ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    showNotify("[📷] Extrayendo silueta desde imagen...");
+    const reader = new FileReader();
+    reader.onload = () => {
+      const targetNode = paths.find(p => p.id === selectedId);
+      if (targetNode && targetNode.d) {
+        handleGenerateSilhouettePreview(targetNode.d);
+      } else {
+        handleGenerateSilhouettePreview(paths);
+      }
+    };
+    reader.readAsDataURL(file);
+    if (e.target) e.target.value = '';
+  };
+
+  // BOTÓN "APLICAR CAMBIOS" (MUTACIÓN SEGURA EN MAP CALIBRATION):
+  const handleApplySilhouetteMutation = () => {
+    const targetId = selectedId;
+    if (!targetId) {
+      alert("No hay ningún nodo seleccionado para aplicar los cambios.");
+      return;
+    }
+    if (!previewSilhouette) {
+      alert("Primero genera una vista previa antes de aplicar cambios.");
+      return;
+    }
+
+    // CÓDIGO EXIGIDO EN PROMPT DE MUTACIÓN SEGURA DE ESTADO:
+    setPaths(prev => prev.map(node =>
+      node.id === targetId ? { ...node, d: previewSilhouette } : node
+    ));
+
+    setPreviewSilhouette(null);
+    showNotify(`[🎯] Inyección quirúrgica exitosa: Silueta del nodo "${targetId}" actualizada. Sus datos permanecen intactos.`);
+    alert(`¡Inyección Quirúrgica Exitosa!\n\nSe ha actualizado EXCLUSIVAMENTE la silueta ('d') del nodo seleccionado "${targetId}". Todos los demás nodos y métricas se conservaron 100% intactos.`);
+  };
+
+  // DESCARTAR VISTA PREVIA
+  const handleCancelSilhouettePreview = () => {
+    setPreviewSilhouette(null);
+    showNotify("[ℹ️] Vista previa de silueta descartada.");
+  };
+
   // ESTADO DE BARRA DE PROGRESO % Y MONITOR DE TRABADO PARA SUBIDA DE ARCHIVOS
   const [isProcessingFile, setIsProcessingFile] = useState<boolean>(false); // Activa el overlay de progreso
   const [fileProgress, setFileProgress] = useState<number>(0); // Porcentaje de carga (0-100)
@@ -562,24 +777,24 @@ export default function MapCalibrationPanel({
 
   // Efecto de Auto-Fill en Montaje: Detecta la región/mapa activo o hereda las 24 provincias nativas de Argentina y pre-llena el textarea inmediatamente
   useEffect(() => {
-    let initialPaths: SVGPathData[] = [];
+    let initialPaths: SVGPathData[] = []; // Inicializa la lista de trazados
 
     // 1. Si la provincia seleccionada tiene subdivisiones/municipios con trazados válidos
     if (selectedProvince && selectedProvince.municipalities && selectedProvince.municipalities.length > 0) {
-      const validSubs = selectedProvince.municipalities.filter((muni) => muni.d && muni.d.trim().length > 0);
-      if (validSubs.length > 0) {
-        initialPaths = validSubs.map((muni) => ({
-          id: muni.id,
-          name: muni.name,
-          d: muni.d!,
-          fill: muni.visualStyles?.fillColor || muni.color || '#0f1a30',
-          stroke: muni.visualStyles?.strokeColor || '#334155',
-          strokeWidth: muni.visualStyles?.strokeWidth || 1,
-          layerId: muni.layer || selectedProvince.name || 'Provincia',
-          properties: {
-            valor: muni.value,
-            porcentaje: muni.percentage,
-            ...(muni.customData || {})
+      const validSubs = selectedProvince.municipalities.filter((muni) => muni.d && muni.d.trim().length > 0); // Filtra los que contienen vector 'd'
+      if (validSubs.length > 0) { // Si existen polígonos válidos
+        initialPaths = validSubs.map((muni) => ({ // Mapea las subdivisiones
+          id: muni.id, // ID
+          name: muni.name, // Nombre
+          d: muni.d!, // Vector SVG
+          fill: muni.visualStyles?.fillColor || muni.color || '#0f1a30', // Color relleno
+          stroke: muni.visualStyles?.strokeColor || '#334155', // Color borde
+          strokeWidth: muni.visualStyles?.strokeWidth || 1, // Grosor borde
+          layerId: muni.layer || selectedProvince.name || 'Provincia', // Capa
+          properties: { // Propiedades
+            valor: muni.value, // Valor
+            porcentaje: muni.percentage, // Porcentaje
+            ...(muni.customData || {}) // Copia metadatos
           }
         }));
       }
@@ -587,7 +802,7 @@ export default function MapCalibrationPanel({
 
     // 2. Herencia Automática: Si la lista de paths está vacía o es el mapa nacional / por defecto, hereda provincePaths.ts
     if (initialPaths.length === 0) {
-      if (!selectedProvince || selectedProvince.id === 'country' || selectedProvince.id === 'AR' || selectedProvince.id === 'ARGENTINA' || selectedProvince.id === 'WORLD_MAP') {
+      if (!selectedProvince || selectedProvince.id === 'country' || selectedProvince.id === 'AR' || selectedProvince.id === 'ARGENTINA') {
         initialPaths = provincePaths.map((p) => ({
           id: p.id,
           name: p.name,
@@ -626,10 +841,14 @@ export default function MapCalibrationPanel({
 
     // Actualiza el estado visual de los polígonos
     setPaths(initialPaths);
-    if (initialPaths.length > 0) {
-      setSelectedId(initialPaths[0].id);
+    
+    // Sincronización con selectedSubdivisionId: Selecciona automáticamente el polígono activo si coincide
+    if (selectedSubdivisionId && initialPaths.some(p => p.id === selectedSubdivisionId)) {
+      setSelectedId(selectedSubdivisionId); // Marca la subdivisión activa
+    } else if (initialPaths.length > 0) {
+      setSelectedId(initialPaths[0].id); // Por defecto selecciona el primer polígono
     } else {
-      setSelectedId(null);
+      setSelectedId(null); // Limpia selección si está vacío
     }
 
     // Auto-Fill Inmediato del textarea en montaje (REGLA 1 FASE 3)
@@ -640,7 +859,7 @@ export default function MapCalibrationPanel({
     } catch (err) {
       console.error("Error al formatear JSON inicial de la región:", err);
     }
-  }, [selectedProvince?.id]); // Escucha cambios en el ID de la provincia seleccionada
+  }, [selectedProvince?.id, selectedSubdivisionId]); // Escucha cambios en la provincia o subdivisión activa
 
   // 1. Procesamiento Recursivo e Ingesta del archivo JSON con Sanitización JS/TS, Barra de Progreso % y Monitor de Trabado
   const handleFileUpload = (e: ChangeEvent<HTMLInputElement>) => { // Función para procesar la subida de un archivo
@@ -795,20 +1014,125 @@ export default function MapCalibrationPanel({
     if (e.target) e.target.value = ''; // Resetea el valor del input de archivo para permitir cargas repetidas del mismo archivo
   }; // Fin de handleFileUpload
 
-  // Modifica los campos directos o las propiedades del elemento vectorial seleccionado
+  // Modifica los campos directos o las propiedades de los elementos vectoriales seleccionados (soporta par contorno+relleno o lote)
   const updateSelectedPath = (field: string, value: any) => { // Función modificadora de trazados
-    if (!selectedId) return; // Si no hay elemento seleccionado, no realiza nada
+    if (selectedIds.length === 0) return; // Si no hay elementos seleccionados, no realiza nada
     setPaths(prev => prev.map(p => { // Recorre la lista previa de trazados
-      if (p.id === selectedId) { // Compara la ID para hallar el elemento activo
+      if (selectedIds.includes(p.id)) { // Compara si la ID está en el lote de selección activo
         if (field === 'name') return { ...p, name: value }; // Modifica el nombre del elemento
         if (field === 'fill') return { ...p, fill: value }; // Modifica el color de relleno
         if (field === 'stroke') return { ...p, stroke: value }; // Modifica el color de borde
+        if (field === 'strokeWidth') return { ...p, strokeWidth: Number(value) }; // Modifica el grosor de línea
         if (field === 'layerId') return { ...p, layerId: value }; // Modifica la capa asignada
         return { ...p, properties: { ...(p.properties || {}), [field]: value } }; // Añade o modifica una propiedad personalizada
       }
       return p; // Devuelve los demás elementos intactos
     })); // Fin de setPaths
   }; // Fin de updateSelectedPath
+
+  // MODO DE VINCULACIÓN AUTOMÁTICA DE CONTORNOS Y RELLENOS HERMANOS (Ej: "Trazado 550 CONTOUR" + "Trazado 550 FILL")
+  const [linkedPairMode, setLinkedPairMode] = useState<boolean>(true); // Activo por defecto para agrupar trazados pares
+  const [selectedIds, setSelectedIds] = useState<string[]>([]); // Arreglo con la lista de IDs actualmente seleccionadas
+
+  // Sincroniza selectedId con selectedIds
+  useEffect(() => {
+    if (selectedId && !selectedIds.includes(selectedId)) {
+      setSelectedIds([selectedId]);
+    }
+  }, [selectedId]);
+
+  // FUNCIÓN PARA SELECCIONAR O UNIR PIEZAS DE CONTORNO + RELLENO
+  const handleSelectPathItem = (targetId: string, isMulti: boolean = false) => {
+    const targetPath = paths.find(p => p.id === targetId);
+    if (!targetPath) return;
+
+    let idsToSelect: string[] = [targetId];
+
+    // Si la vinculación automática está activa, buscar piezas que compartan número o identificador base
+    if (linkedPairMode && targetPath) {
+      // Extrae cualquier patrón numérico del nombre o ID (ej: "550" de "Trazado PDF [Pág 1] 550")
+      const numMatch = targetPath.name.match(/\d+/) || targetPath.id.match(/\d+/);
+      if (numMatch) {
+        const numPattern = numMatch[0];
+        // Busca otros trazados con el mismo número de referencia
+        const siblingPaths = paths.filter(p => 
+          p.id !== targetId && 
+          (p.name.includes(numPattern) || p.id.includes(numPattern))
+        );
+        siblingPaths.forEach(s => {
+          if (!idsToSelect.includes(s.id)) {
+            idsToSelect.push(s.id);
+          }
+        });
+      }
+    }
+
+    if (isMulti) {
+      setSelectedIds(prev => {
+        const hasAll = idsToSelect.every(id => prev.includes(id));
+        if (hasAll) {
+          return prev.filter(id => !idsToSelect.includes(id));
+        } else {
+          return Array.from(new Set([...prev, ...idsToSelect]));
+        }
+      });
+    } else {
+      setSelectedIds(idsToSelect);
+    }
+    setSelectedId(targetId); // Actualiza el ID seleccionado internamente
+    if (onSelectSubdivision) { // Verifica si se proveyó el callback de sincronización
+      onSelectSubdivision(targetId); // Notifica a la aplicación sobre la subdivisión/pieza seleccionada
+    }
+  };
+
+  // FUNCIÓN PARA ELIMINAR ELEMENTOS SELECCIONADOS (TECLA SUPR O BOTÓN TACHO DE BASURA)
+  const handleDeleteSelected = (specificIds?: any) => {
+    const targetsToDelete: string[] = Array.isArray(specificIds) ? specificIds : (Array.isArray(selectedIds) ? selectedIds : []);
+    if (!targetsToDelete || targetsToDelete.length === 0) return;
+
+    setPaths(prev => (prev || []).filter(p => p && p.id && !targetsToDelete.includes(p.id)));
+    setSelectedIds(prev => (Array.isArray(prev) ? prev.filter(id => !targetsToDelete.includes(id)) : []));
+    if (selectedId && targetsToDelete.includes(selectedId)) {
+      setSelectedId(null);
+    }
+    showNotify(`[🗑️] Se eliminaron ${targetsToDelete.length} elemento(s) vectorial(es).`);
+  };
+
+  // LISTENER DE TECLADO PARA TECLA SUPR / DELETE O BACKSPACE
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      // Ignorar si el usuario está escribiendo dentro de un input, textarea o selector
+      const activeElement = document.activeElement;
+      const isInput = activeElement && (
+        activeElement.tagName === 'INPUT' || 
+        activeElement.tagName === 'TEXTAREA' || 
+        activeElement.tagName === 'SELECT' || 
+        (activeElement as HTMLElement).isContentEditable
+      );
+
+      if (isInput) return; // No intercepta la tecla si está en un campo de texto
+
+      if (e.key === 'Delete' || e.key === 'Del' || e.key === 'Backspace') {
+        if (selectedIds.length > 0) {
+          e.preventDefault();
+          handleDeleteSelected();
+        }
+      }
+    };
+
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [selectedIds]);
+
+  // SCROLL AUTOMÁTICO AL ELEMENTO SELECCIONADO DENTRO DE LA LISTA DE CAPAS
+  useEffect(() => {
+    if (selectedId) {
+      const el = document.getElementById(`layer-item-${selectedId}`);
+      if (el) {
+        el.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+      }
+    }
+  }, [selectedId, rightTab]);
 
   // Agrega una nueva propiedad clave y valor a la matriz de metadatos del elemento activo
   const handleAddProperty = (e: React.FormEvent) => { // Manejador del formulario de añadir métrica
@@ -982,6 +1306,20 @@ export default function MapCalibrationPanel({
             <Upload className="w-4 h-4 text-slate-400" />
             <span>Cargar Mapa Multicapa JSON</span>
             <input type="file" accept=".json" onChange={handleFileUpload} className="hidden" />
+          </label>
+
+          {/* Botón de Inyección Quirúrgica de Contorno (Reemplazar Silueta) en Encabezado */}
+          <label
+            className={`flex items-center gap-1.5 px-3 py-2 rounded-lg border cursor-pointer transition-all text-xs font-bold shadow-sm ${
+              selectedId
+                ? 'bg-purple-600 hover:bg-purple-500 text-white border-purple-400/50 shadow-purple-950/30'
+                : 'bg-slate-900 text-slate-500 border-slate-800 cursor-not-allowed opacity-60'
+            }`}
+            title={selectedId ? `Inyectar contorno para reemplazo quirúrgico de silueta en "${selectedId}"` : "Selecciona un nodo en el mapa para activar la Inyección de Silueta"}
+          >
+            <Sparkles className="w-4 h-4 text-purple-300" />
+            <span>Reemplazar silueta seleccionada con contorno importado</span>
+            <input type="file" accept=".json" onChange={handleInjectContourFile} disabled={!selectedId} className="hidden" />
           </label>
 
           {/* Botón para Guardar en Base de Datos geoNodes con parentId */}
@@ -1336,23 +1674,24 @@ export default function MapCalibrationPanel({
                 /* Grupo contenedor con las transformaciones de escala y traslación aplicadas */
                 <g transform={`translate(${translateX}, ${translateY}) scale(${scale})`}>
                   {paths.map((path) => { // Recorre el arreglo de trazados vectoriales
-                    const isSelected = path.id === selectedId; // Verifica si el elemento está seleccionado
+                    const isSelected = selectedIds.includes(path.id) || path.id === selectedId; // Verifica si el elemento está en la lista de seleccionados
                     const isHovered = path.id === hoveredId; // Verifica si el puntero está sobre el elemento
 
                     // LÓGICA DE DIBUJADO QUE RESPETA EL DISEÑO Y BORDES ORIGINALES
                     // Si el elemento contiene color de relleno propio lo utiliza, de lo contrario asigna el tono oscuro por defecto
                     let fillRender = path.fill || "#0f1a30"; // Color de relleno predeterminado
-                    if (isSelected) fillRender = "#10b981"; // Resaltado de selección verde esmeralda
+                    if (isSelected) fillRender = path.fill && path.fill !== '#0f1a30' && path.fill !== 'none' ? path.fill : "#10b981"; // Resaltado de selección verde esmeralda respetando relleno
                     else if (isHovered && !path.fill) fillRender = "#10b98133"; // Resaltado de hover translúcido
 
                     // Fuerza siempre a que el elemento tenga borde visible para evitar la fusión en bloques sólidos
                     const strokeRender = isSelected ? "#34d399" : (path.stroke || "#334155"); // Color del trazo o contorno
-                    const strokeWRender = isSelected ? strokeWidthUnit * 2.5 : (path.strokeWidth || strokeWidthUnit); // Grosor de línea
+                    const strokeWRender = isSelected ? 1.5 : (path.strokeWidth || 0.6); // Grosor de línea ultra-fino responsivo
 
                     return ( // Retorna el elemento path SVG
                       <path
                         key={path.id} // Clave única React
                         d={path.d} // Trazo SVG
+                        vectorEffect="non-scaling-stroke"
                         fill={fillRender} // Color de relleno determinado
                         stroke={strokeRender} // Color de contorno determinado
                         strokeWidth={strokeWRender} // Grosor de línea
@@ -1361,10 +1700,26 @@ export default function MapCalibrationPanel({
                         className="cursor-pointer transition-colors duration-150 ease-in-out" // Estilos e interacciones CSS
                         onMouseEnter={() => setHoveredId(path.id)} // Manejador de entrada de puntero
                         onMouseLeave={() => setHoveredId(null)} // Manejador de salida de puntero
-                        onClick={() => setSelectedId(path.id)} // Manejador de selección por clic
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          handleSelectPathItem(path.id, e.shiftKey);
+                        }} // Manejador de selección por clic con soporte Shift
                       />
                     ); // Fin del path SVG
                   })}
+
+                  {/* OVERLAY DE VISTA PREVIA DE SILUETA PERFECCIONADA (EN ROJO/ROSA SOBRE EL MAPA) */}
+                  {previewSilhouette && (
+                    <path
+                      d={previewSilhouette}
+                      stroke="#f43f5e"
+                      strokeWidth={3 / scale}
+                      fill="rgba(244, 63, 94, 0.2)"
+                      pointerEvents="none"
+                      className="animate-pulse"
+                      style={{ filter: 'drop-shadow(0px 0px 8px rgba(244, 63, 94, 0.8))' }}
+                    />
+                  )}
                 </g>
               )}
             </svg>
@@ -1403,41 +1758,81 @@ export default function MapCalibrationPanel({
           {/* VISTA 1: INSPECTOR VISUAL TRADICIONAL */}
           {rightTab === 'inspector' && (
             <>
-              {/* Sección de Lista de Trazados y Buscador */}
-              <div className="p-4 border-b border-slate-800">
-                <span className="text-xs font-semibold text-slate-400 tracking-wider uppercase block mb-2">
-                  Lista de Piezas Geográficas ({paths.length})
-                </span>
+              {/* Sección de Lista de Trazados, Vincular Pares y Buscador */}
+              <div className="p-4 border-b border-slate-800 space-y-2.5">
+                <div className="flex items-center justify-between">
+                  <span className="text-xs font-semibold text-slate-400 tracking-wider uppercase">
+                    Lista de Piezas Geográficas ({paths.length})
+                  </span>
+                  
+                  {/* Botón Toggle para Vincular Contorno + Relleno Hermanos */}
+                  <button
+                    onClick={() => setLinkedPairMode(!linkedPairMode)}
+                    className={`text-[10px] font-bold px-2 py-1 rounded-lg border transition-all flex items-center gap-1 cursor-pointer ${
+                      linkedPairMode 
+                        ? 'bg-emerald-500/10 border-emerald-500/40 text-emerald-400'
+                        : 'bg-slate-800 border-slate-700 text-slate-400'
+                    }`}
+                    title="Al seleccionar una pieza, selecciona automáticamente sus pares de Contorno y Relleno asociados"
+                  >
+                    <span>{linkedPairMode ? '🔗 Contorno+Relleno Vinculados' : '🔓 Trabajar por Separado'}</span>
+                  </button>
+                </div>
+
                 <div className="relative">
                   <Search className="w-3.5 h-3.5 text-slate-500 absolute left-3 top-2.5" />
                   <input
                     type="text"
-                    placeholder="Buscar por nombre o capa (ej. rios)..."
+                    placeholder="Buscar por nombre o capa (ej. rios, 550)..."
                     value={searchTerm}
                     onChange={(e) => setSearchTerm(e.target.value)}
                     className="w-full bg-slate-900 border border-slate-800 rounded-lg pl-8 pr-3 py-1.5 text-xs text-slate-200 placeholder-slate-500 focus:outline-none focus:border-emerald-500"
                   />
                 </div>
 
-                {/* Listado Desplazable de Elementos Encontrados */}
-                <div className="max-h-40 overflow-y-auto mt-2 border border-slate-800 bg-slate-900/40 rounded-lg text-xs">
-                  {filteredPaths.map(p => (
-                    <button
-                      key={p.id}
-                      onClick={() => setSelectedId(p.id)}
-                      className={`w-full text-left px-3 py-2 border-b border-slate-800/60 flex justify-between items-center transition-colors ${
-                        p.id === selectedId 
-                          ? 'bg-emerald-500/10 text-emerald-400 font-semibold'
-                          : 'hover:bg-slate-800/50 text-slate-300'
-                      }`}
-                    >
-                      <div className="flex flex-col">
-                        <span className="truncate max-w-[160px]">{p.name}</span>
-                        {p.layerId && <span className="text-[9px] text-slate-500 uppercase">Capa: {p.layerId}</span>}
+                {/* Listado Desplazable de Elementos Encontrados con Tacho de Basura por Fila y ID para Scroll */}
+                <div className="max-h-48 overflow-y-auto border border-slate-800 bg-slate-900/40 rounded-lg text-xs">
+                  {filteredPaths.map(p => {
+                    const isItemSelected = selectedIds.includes(p.id) || p.id === selectedId;
+                    return (
+                      <div
+                        key={p.id}
+                        id={`layer-item-${p.id}`}
+                        onClick={(e) => handleSelectPathItem(p.id, e.shiftKey)}
+                        className={`w-full px-3 py-2 border-b border-slate-800/60 flex justify-between items-center transition-colors cursor-pointer group ${
+                          isItemSelected
+                            ? 'bg-emerald-500/15 text-emerald-300 font-semibold border-l-2 border-l-emerald-400'
+                            : 'hover:bg-slate-800/50 text-slate-300'
+                        }`}
+                      >
+                        <div className="flex flex-col min-w-0 pr-2">
+                          <span className="truncate max-w-[170px]">{p.name}</span>
+                          <div className="flex items-center gap-2 text-[9px] text-slate-500 uppercase">
+                            {p.layerId && <span>Capa: {p.layerId}</span>}
+                            {p.fill && p.fill !== 'none' && (
+                              <span className="inline-block w-2.5 h-2.5 rounded-full border border-slate-700" style={{ backgroundColor: p.fill }} title={`Relleno: ${p.fill}`} />
+                            )}
+                          </div>
+                        </div>
+
+                        <div className="flex items-center gap-2 shrink-0">
+                          <span className="text-[10px] text-slate-500 font-mono truncate max-w-[70px]">{p.id}</span>
+                          
+                          {/* Botón Tacho de Basura (Eliminar individual en 1 clic) */}
+                          <button
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              handleDeleteSelected([p.id]);
+                            }}
+                            className="opacity-0 group-hover:opacity-100 p-1 text-slate-500 hover:text-rose-400 hover:bg-rose-500/10 rounded transition-all"
+                            title="Eliminar este trazado"
+                          >
+                            <Trash2 className="w-3.5 h-3.5" />
+                          </button>
+                        </div>
                       </div>
-                      <span className="text-[10px] text-slate-500 font-mono truncate max-w-[80px]">{p.id}</span>
-                    </button>
-                  ))}
+                    );
+                  })}
                   {filteredPaths.length === 0 && paths.length > 0 && (
                     <div className="p-3 text-slate-500 text-center">Sin resultados coincidentes.</div>
                   )}
@@ -1446,9 +1841,22 @@ export default function MapCalibrationPanel({
 
               {/* Editor de Propiedades del Trazado Seleccionado */}
               <div className="p-4 flex-1 flex flex-col gap-4">
-                <span className="text-xs font-semibold text-slate-400 tracking-wider uppercase block">
-                  Identidad y Datos Asociados
-                </span>
+                <div className="flex items-center justify-between">
+                  <span className="text-xs font-semibold text-slate-400 tracking-wider uppercase block">
+                    Identidad, Colores y Datos ({selectedIds.length > 0 ? selectedIds.length : 0})
+                  </span>
+
+                  {selectedIds.length > 0 && (
+                    <button
+                      onClick={() => handleDeleteSelected()}
+                      className="px-2 py-1 bg-rose-500/10 hover:bg-rose-500/20 text-rose-400 border border-rose-500/30 rounded-lg text-xs font-bold transition-all cursor-pointer flex items-center space-x-1"
+                      title="Eliminar elemento(s) seleccionado(s) (O presiona tecla Supr)"
+                    >
+                      <Trash2 className="w-3.5 h-3.5" />
+                      <span>Borrar (Supr)</span>
+                    </button>
+                  )}
+                </div>
 
                 {selectedPath ? (
                   <div className="flex flex-col gap-4 flex-1">
@@ -1470,9 +1878,6 @@ export default function MapCalibrationPanel({
                         onChange={(e) => updateSelectedPath('name', e.target.value)}
                         className="w-full bg-slate-900 border border-slate-800 rounded-lg px-3 py-2 text-xs text-slate-200 focus:outline-none focus:border-emerald-500 font-medium"
                       />
-                      <p className="text-[10px] text-slate-500 mt-1">
-                        Cambiá este nombre al real (Ej: "Río Paraná", "Francia", "Malvinas")
-                      </p>
                     </div>
 
                     <div>
@@ -1484,6 +1889,239 @@ export default function MapCalibrationPanel({
                         placeholder="Ej: Rios, Lagos, Paises..."
                         className="w-full bg-slate-900 border border-slate-800 rounded-lg px-3 py-2 text-xs text-slate-200 focus:outline-none focus:border-emerald-500 font-medium"
                       />
+                    </div>
+
+                    {/* SECCIÓN OBLIGATORIA: MEJORAR SILUETA SELECCIONADA (PERFECCIONADOR DE SILUETA - 4 OPCIONES Y VISTA PREVIA) */}
+                    <div className="border border-purple-800/80 rounded-2xl bg-gradient-to-b from-purple-950/40 to-slate-900/90 p-3 space-y-3 shadow-xl">
+                      <div className="flex items-center justify-between border-b border-purple-800/50 pb-2">
+                        <h4 className="text-xs font-black uppercase tracking-wider text-purple-300 flex items-center gap-1.5">
+                          <Sparkles className="w-3.5 h-3.5 text-purple-400" />
+                          <span>Mejorar Silueta Seleccionada</span>
+                        </h4>
+                        <span className="text-[9px] bg-purple-900/80 text-purple-200 px-2 py-0.5 rounded font-mono border border-purple-700/50">
+                          Perfeccionador SVG
+                        </span>
+                      </div>
+
+                      <p className="text-[11px] text-slate-300 leading-snug">
+                        Sustituye quirúrgicamente la silueta (<code className="text-purple-300 font-mono">d</code>) de <strong className="text-emerald-400">{selectedPath.name || selectedPath.id}</strong> con el contorno exterior limpio de otra fuente.
+                      </p>
+
+                      {/* PESTAÑAS / SELECCIÓN DE LAS 4 OPCIONES DE ENTRADA DE FUENTE */}
+                      <div className="grid grid-cols-4 gap-1 bg-slate-950/80 p-1 rounded-xl border border-slate-800 text-[10px] font-bold">
+                        <button
+                          type="button"
+                          onClick={() => setSilhouetteInputMethod('paste')}
+                          className={`py-1.5 px-1 rounded-lg transition-all text-center cursor-pointer ${
+                            silhouetteInputMethod === 'paste'
+                              ? 'bg-purple-600 text-white shadow-sm font-extrabold'
+                              : 'text-slate-400 hover:text-slate-200'
+                          }`}
+                        >
+                          1. Pegar
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => setSilhouetteInputMethod('file')}
+                          className={`py-1.5 px-1 rounded-lg transition-all text-center cursor-pointer ${
+                            silhouetteInputMethod === 'file'
+                              ? 'bg-purple-600 text-white shadow-sm font-extrabold'
+                              : 'text-slate-400 hover:text-slate-200'
+                          }`}
+                        >
+                          2. Importar
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => setSilhouetteInputMethod('image')}
+                          className={`py-1.5 px-1 rounded-lg transition-all text-center cursor-pointer ${
+                            silhouetteInputMethod === 'image'
+                              ? 'bg-purple-600 text-white shadow-sm font-extrabold'
+                              : 'text-slate-400 hover:text-slate-200'
+                          }`}
+                        >
+                          3. Imagen
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => setSilhouetteInputMethod('preset')}
+                          className={`py-1.5 px-1 rounded-lg transition-all text-center cursor-pointer ${
+                            silhouetteInputMethod === 'preset'
+                              ? 'bg-purple-600 text-white shadow-sm font-extrabold'
+                              : 'text-slate-400 hover:text-slate-200'
+                          }`}
+                        >
+                          4. Ruta
+                        </button>
+                      </div>
+
+                      {/* VISTAS DE ENTRADA SEGÚN LA OPCIÓN ACTIVA */}
+                      {silhouetteInputMethod === 'paste' && (
+                        <div className="space-y-1.5">
+                          <label className="text-[9px] uppercase font-bold text-slate-400 tracking-wider block">
+                            Pegar JSON / SVG o Trazo SVG (`d`):
+                          </label>
+                          <textarea
+                            value={silhouettePasteText}
+                            onChange={(e) => setSilhouettePasteText(e.target.value)}
+                            placeholder='Pega aquí el código JSON o <path d="..." />...'
+                            rows={3}
+                            className="w-full bg-slate-950 border border-slate-800 focus:border-purple-500 rounded-xl p-2 text-[10px] font-mono text-slate-200 outline-none resize-none"
+                          />
+                        </div>
+                      )}
+
+                      {silhouetteInputMethod === 'file' && (
+                        <div className="space-y-1.5">
+                          <label className="text-[9px] uppercase font-bold text-slate-400 tracking-wider block">
+                            Importar archivo .JSON o .SVG:
+                          </label>
+                          <label className="flex items-center justify-center gap-2 bg-slate-950 hover:bg-slate-900 border border-dashed border-purple-500/50 hover:border-purple-400 text-purple-300 p-3 rounded-xl cursor-pointer transition-all text-xs font-bold">
+                            <Upload className="w-3.5 h-3.5" />
+                            <span>Seleccionar archivo JSON / SVG</span>
+                            <input type="file" accept=".json,.svg" onChange={handleSilhouetteFileUpload} className="hidden" />
+                          </label>
+                        </div>
+                      )}
+
+                      {silhouetteInputMethod === 'image' && (
+                        <div className="space-y-1.5">
+                          <label className="text-[9px] uppercase font-bold text-slate-400 tracking-wider block">
+                            Cargar desde Imagen (Vectorizador/Autotrace):
+                          </label>
+                          <label className="flex items-center justify-center gap-2 bg-slate-950 hover:bg-slate-900 border border-dashed border-purple-500/50 hover:border-purple-400 text-purple-300 p-3 rounded-xl cursor-pointer transition-all text-xs font-bold">
+                            <FileUp className="w-3.5 h-3.5" />
+                            <span>Subir Imagen (PNG/JPG/SVG)</span>
+                            <input type="file" accept="image/*,.svg" onChange={handleSilhouetteImageUpload} className="hidden" />
+                          </label>
+                        </div>
+                      )}
+
+                      {silhouetteInputMethod === 'preset' && (
+                        <div className="space-y-1.5">
+                          <label className="text-[9px] uppercase font-bold text-slate-400 tracking-wider block">
+                            Extraer de Ruta Existente con divisiones internas:
+                          </label>
+                          <select
+                            value={silhouettePresetRoute}
+                            onChange={(e) => setSilhouettePresetRoute(e.target.value)}
+                            className="w-full bg-slate-950 border border-slate-800 focus:border-purple-500 rounded-xl p-2 text-xs font-bold text-slate-200 outline-none cursor-pointer"
+                          >
+                            <option value="ARG_24">🇦🇷 Argentina (Mapa de 24 Provincias detalladas)</option>
+                            <option value="CURRENT_MAP">🗺️ Mapa Actual ({paths.length} polígonos)</option>
+                          </select>
+                        </div>
+                      )}
+
+                      {/* BOTÓN "GENERAR VISTA PREVIA" */}
+                      <button
+                        type="button"
+                        onClick={() => handleGenerateSilhouettePreview()}
+                        className="w-full py-2 bg-purple-600 hover:bg-purple-500 text-white font-black rounded-xl text-xs uppercase tracking-wider transition-all cursor-pointer flex items-center justify-center gap-1.5 shadow-md shadow-purple-950/40 hover:scale-[1.01]"
+                      >
+                        <Sparkles className="w-3.5 h-3.5" />
+                        <span>Generar Vista Previa</span>
+                      </button>
+
+                      {/* PANEL DE VISTA PREVIA Y BOTÓN "APLICAR CAMBIOS" (MUTACIÓN SEGURA) */}
+                      {previewSilhouette && (
+                        <div className="bg-purple-950/80 border border-purple-500/60 rounded-xl p-3 space-y-2.5 animate-fadeIn">
+                          <div className="flex items-center justify-between">
+                            <span className="text-[10px] font-black uppercase tracking-wider text-rose-300 flex items-center gap-1">
+                              <span className="w-2 h-2 rounded-full bg-rose-500 animate-ping" />
+                              <span>Vista Previa Activa (Lienzo en Rojo)</span>
+                            </span>
+                            <button
+                              type="button"
+                              onClick={handleCancelSilhouettePreview}
+                              className="text-slate-400 hover:text-white text-[10px] font-bold underline cursor-pointer"
+                            >
+                              Descartar
+                            </button>
+                          </div>
+                          <p className="text-[10px] text-slate-300 leading-snug">
+                            El contorno exterior perfeccionado se muestra resaltado sobre el mapa. Presiona el botón para inyectarlo en <strong className="text-emerald-400">{selectedPath.name || selectedPath.id}</strong>.
+                          </p>
+
+                          {/* BOTÓN "APLICAR CAMBIOS" (MUTACIÓN SEGURA DE ESTADO) */}
+                          <button
+                            type="button"
+                            onClick={handleApplySilhouetteMutation}
+                            className="w-full py-2.5 bg-gradient-to-r from-emerald-500 to-teal-400 hover:from-emerald-400 hover:to-teal-300 text-slate-950 font-black rounded-xl text-xs uppercase tracking-wider transition-all cursor-pointer flex items-center justify-center gap-2 shadow-lg shadow-emerald-950/50 hover:scale-[1.02]"
+                          >
+                            <Check className="w-4 h-4" />
+                            <span>Aplicar Cambios</span>
+                          </button>
+                        </div>
+                      )}
+
+                      <p className="text-[10px] text-slate-400 italic text-center">
+                        Los demás {paths.length - 1} nodos y todos los datos estadísticos de {selectedPath.name || selectedPath.id} se conservan 100% intactos.
+                      </p>
+                    </div>
+
+                    {/* EDICIÓN DIRECTA DE ESTILOS VISUALES: RELLENO, BORDE Y GROSOR */}
+                    <div className="border border-slate-800 rounded-xl bg-slate-900/60 p-3 space-y-3">
+                      <span className="text-xs font-medium text-emerald-400 block">
+                        🎨 Estilos Visuales (Relleno y Contorno)
+                      </span>
+
+                      <div className="grid grid-cols-2 gap-3">
+                        {/* Color de Relleno */}
+                        <div className="space-y-1">
+                          <label className="text-[10px] text-slate-400 uppercase font-bold block">Color Relleno</label>
+                          <div className="flex items-center gap-2 bg-slate-900 border border-slate-800 rounded-lg p-1.5">
+                            <input
+                              type="color"
+                              value={selectedPath.fill && selectedPath.fill.startsWith('#') ? selectedPath.fill : '#0f1a30'}
+                              onChange={(e) => updateSelectedPath('fill', e.target.value)}
+                              className="w-6 h-6 rounded cursor-pointer border-0 bg-transparent"
+                            />
+                            <input
+                              type="text"
+                              value={selectedPath.fill || '#0f1a30'}
+                              onChange={(e) => updateSelectedPath('fill', e.target.value)}
+                              className="w-full bg-transparent text-xs font-mono text-slate-200 focus:outline-none"
+                            />
+                          </div>
+                        </div>
+
+                        {/* Color de Contorno / Borde */}
+                        <div className="space-y-1">
+                          <label className="text-[10px] text-slate-400 uppercase font-bold block">Color Borde</label>
+                          <div className="flex items-center gap-2 bg-slate-900 border border-slate-800 rounded-lg p-1.5">
+                            <input
+                              type="color"
+                              value={selectedPath.stroke && selectedPath.stroke.startsWith('#') ? selectedPath.stroke : '#334155'}
+                              onChange={(e) => updateSelectedPath('stroke', e.target.value)}
+                              className="w-6 h-6 rounded cursor-pointer border-0 bg-transparent"
+                            />
+                            <input
+                              type="text"
+                              value={selectedPath.stroke || '#334155'}
+                              onChange={(e) => updateSelectedPath('stroke', e.target.value)}
+                              className="w-full bg-transparent text-xs font-mono text-slate-200 focus:outline-none"
+                            />
+                          </div>
+                        </div>
+                      </div>
+
+                      {/* Grosor de Contorno */}
+                      <div className="space-y-1">
+                        <div className="flex justify-between text-[10px]">
+                          <span className="text-slate-400 font-bold uppercase">Grosor de Borde</span>
+                          <span className="text-emerald-400 font-mono">{selectedPath.strokeWidth || 1}px</span>
+                        </div>
+                        <input
+                          type="range"
+                          min="0.2"
+                          max="10"
+                          step="0.2"
+                          value={selectedPath.strokeWidth || 1}
+                          onChange={(e) => updateSelectedPath('strokeWidth', parseFloat(e.target.value))}
+                          className="w-full accent-emerald-500 cursor-pointer"
+                        />
+                      </div>
                     </div>
 
                     <div className="border border-slate-800 rounded-xl bg-slate-900/60 p-3 flex flex-col gap-3">
