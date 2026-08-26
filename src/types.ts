@@ -222,5 +222,35 @@ export interface MapPathNode {
   customData?: Record<string, any>; // Metadatos adicionales libres
 }
 
+// ============================================================================
+// EXPLORADOR UNIVERSAL DE ARCHIVOS Y PROYECTOS (ESTILO GOOGLE DRIVE DARK MODE)
+// ============================================================================
+
+export type UniversalFileType = 'folder' | 'file' | 'image' | 'pdf' | 'json' | 'map' | 'spreadsheet';
+export type UniversalFileSource = 'drive' | 'local' | 'db';
+
+export interface UniversalFileItem {
+  id: string;
+  name: string;
+  type: UniversalFileType;
+  source: UniversalFileSource;
+  size?: number | string;
+  updatedAt?: string;
+  thumbnailUrl?: string;
+  svgThumbnailPreview?: string;
+  description?: string;
+  webViewLink?: string;
+  originalPayload?: any;
+  isCurrentActive?: boolean;
+  subdivisionCount?: number;
+}
+
+export interface BreadcrumbPathItem {
+  id: string;
+  name: string;
+  icon?: any;
+}
+
+
 
 

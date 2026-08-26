@@ -63,6 +63,22 @@ export const provinceCustomizations = pgTable('province_customizations', { // Re
 }); // Fin del esquema de personalización de provincias
 
 // ==========================================
+// TABLA DE PROYECTOS Y MAPAS (Cloud SQL & Persistencia Multidestino)
+// ==========================================
+export const projects = pgTable('projects', { // Define la tabla central para almacenar proyectos completos de mapas
+  id: varchar('id', { length: 255 }).primaryKey(), // Identificador único principal del proyecto
+  userId: text('user_id'), // Identificador del usuario propietario (opcional o de sesión)
+  name: text('name').notNull(), // Nombre amigable asignado al proyecto (ej. "Mapa Mundial 2026", "Cuencas de Misiones")
+  description: text('description'), // Descripción opcional con detalles del proyecto
+  category: varchar('category', { length: 100 }).default('cartografia'), // Categoría del proyecto ('cartografia' | 'salud' | 'catastro')
+  activeLevel: varchar('active_level', { length: 100 }).default('country'), // Nivel territorial activo en el momento de guardar
+  payload: jsonb('payload').notNull(), // Estructura JSON completa del proyecto (nodos, provincias, métricas, rutas)
+  isPublic: text('is_public').default('true').notNull(), // Indicador de visibilidad pública o privada
+  createdAt: timestamp('created_at').defaultNow().notNull(), // Fecha y hora de creación del proyecto
+  updatedAt: timestamp('updated_at').defaultNow().notNull(), // Fecha y hora de última modificación del proyecto
+}); // Fin del esquema de la tabla de proyectos
+
+// ==========================================
 // TABLA JERÁRQUICA: TERRITORIES (SIG & Catastro Global - Argentina y Provincias)
 // ==========================================
 export const territories = pgTable('territories', { // Define la tabla maestra para soportar el mapa jerárquico de Argentina y Provincias

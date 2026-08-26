@@ -19,6 +19,8 @@ import AdminHierarchyTreeEditor from './components/AdminHierarchyTreeEditor'; //
 import AdminUserManagement from './components/AdminUserManagement'; // Componente de gestión de usuarios y perfiles para administradores
 import AdminHelpGuide from './components/AdminHelpGuide'; // Componente de la Guía de Ayuda, Convenciones y Tutorial de Uso
 import UserProfileModal from './components/UserProfileModal'; // Componente modal para edición de perfil personal
+import { ProjectDestinationsModal, ModalTab } from './components/ProjectDestinationsModal'; // Componente modal de persistencia multidestino (BD, Drive, Disco)
+import { defaultWorldVectorMap, getCleanWorldMapEntity, repairAndRestoreWorldMap } from './data/defaultWorldMap'; // Importación de moldes vectoriales mundiales y funciones de restauración pura
 import { mockProvincesData } from './data/mockData'; // Diccionario con los datos geográficos e indicadores iniciales de Argentina
 import { provincePaths } from './data/provincePaths'; // Moldes nativos vectoriales de las 24 provincias de la República Argentina
 import { MetricType, ProvinceData, RegionNode, NavNode, UserRole, UserProfile, TreeNode } from './types'; // Tipos e interfaces de TypeScript
@@ -26,6 +28,7 @@ import { safeSetItem, safeGetItem, safeRemoveItem } from './lib/storage'; // Fun
 import { fetchAllGeoNodes } from './lib/dbService'; // Importa la consulta a la base de datos real (Cloud SQL / Drizzle)
 import { useProjectManager } from './hooks/useProjectManager'; // Hook de ciclo de vida de proyectos y File System Access API
 import { getPathBBox, fitPathToBBox } from './lib/mapUtils'; // Utilidades geométricas vectoriales para cálculo de bounding box y escalado espacial exacto
+import { autoRepairArgentinaMap, restoreTierraDelFuegoToOriginal, restoreMalvinasToOriginal, restoreFullArgentinaMap } from './utils/mapRecovery'; // Motor de recuperación geográfica y blindaje de Tierra del Fuego y Malvinas
 
 // Objeto con la configuración inicial y predeterminada de perfiles de usuario por defecto
 const DEFAULT_USER_PROFILES: Record<string, UserProfile> = {
@@ -100,17 +103,17 @@ const defaultWorldMapData: ProvinceData = { // Definición de datos por defecto 
     educationInvestment: [{ label: 'Promedio', value: 4.5 }] // Inversión en educación respecto al PIB
   }, // Fin de presupuesto
   mobilityServices: { roadNetwork: 'Red Vial Global', waterAccess: 88, publicTransportLines: 1250 }, // Servicios públicos de transporte y agua
-  municipalities: [ // Colección de países de la Tierra para la vista de nivel Mundo
-    { id: 'country', name: 'República Argentina', value: 41.7, percentage: 10, color: '#10b981' },
-    { id: 'BR', name: 'Brasil', value: 24.3, percentage: 48, color: '#059669' },
-    { id: 'CL', name: 'Chile', value: 10.8, percentage: 8, color: '#3b82f6' },
-    { id: 'UY', name: 'Uruguay', value: 9.9, percentage: 4, color: '#0284c7' },
-    { id: 'CO', name: 'Colombia', value: 36.6, percentage: 12, color: '#f59e0b' },
-    { id: 'PE', name: 'Perú', value: 27.5, percentage: 11, color: '#eab308' },
-    { id: 'MX', name: 'México', value: 36.3, percentage: 18, color: '#ec4899' },
-    { id: 'ES', name: 'España', value: 20.4, percentage: 5, color: '#8b5cf6' },
-    { id: 'US', name: 'Estados Unidos', value: 11.5, percentage: 35, color: '#6366f1' }
-  ] // Fin de la lista de países para el nivel Mundo
+  municipalities: defaultWorldVectorMap.map(c => ({ // Colección completa de países y continentes de la Tierra para la vista Mundo
+    id: c.id, // Identificador de país
+    name: c.name, // Nombre de la nación
+    value: c.value, // Índice socioeconómico
+    percentage: c.percentage, // Porcentaje o métrica
+    d: c.d, // Trazado vectorial SVG
+    color: c.color, // Color asignado
+    layer: c.category, // Continente o región
+    visualStyles: { fillColor: c.color, strokeColor: '#0f172a', strokeWidth: 1.2 }, // Estilos de renderizado
+    customData: { valor: c.value, porcentaje: c.percentage, fill: c.color, region: c.category } // Metadatos
+  })) // Fin de la lista de países completa para el nivel Mundo
 }; // Fin de defaultWorldMapData
 
 // Objeto de configuración predeterminado con los indicadores continentales para el nivel América del Sur
@@ -217,8 +220,19 @@ function AppContent() { // Componente que maneja el estado global y las rutas de
   // Estado para almacenar el árbol de nodos dinámicos recuperado desde la base de datos real (Cloud SQL / Drizzle)
   const [appTreeNodes, setAppTreeNodes] = useState<TreeNode[]>([]);
 
-  // HOOK DE INICIALIZACIÓN (Task 3): Carga el árbol de nodos directamente de la base de datos al iniciar la app
+  // HOOK DE INICIALIZACIÓN (Task 3): Carga el árbol de nodos y auto-repara mapa de Argentina (Tierra del Fuego y Malvinas)
   useEffect(() => {
+    // 1. Auto-reparación y blindaje de Tierra del Fuego y Malvinas
+    try {
+      const repairResult = autoRepairArgentinaMap();
+      if (repairResult.repairedTierraDelFuego || repairResult.repairedMalvinas) {
+        console.log('🛡️ Auto-reparación geográfica completada con éxito:', repairResult);
+      }
+    } catch (e) {
+      console.error('Error al auto-reparar geometrías de mapa:', e);
+    }
+
+    // 2. Carga del árbol de base de datos
     async function initTreeFromDatabase() { // Función asíncrona interna para cargar el árbol
       try {
         const nodesFromDb = await fetchAllGeoNodes(); // SELECT a la tabla geoNodes / backend
@@ -367,23 +381,49 @@ function AppContent() { // Componente que maneja el estado global y las rutas de
     if (savedWorldCanvas) {
       try {
         const parsedCanvas = JSON.parse(savedWorldCanvas);
-        if (parsedCanvas && Array.isArray(parsedCanvas.paths) && parsedCanvas.paths.length > 0) {
+        // Si contiene varios países (> 2) lo carga, pero si solo contiene 1 elemento (corrupción por asociar) o se sobreescribió, lo auto-repara
+        if (parsedCanvas && Array.isArray(parsedCanvas.paths) && parsedCanvas.paths.length > 2) {
           const worldMunis = parsedCanvas.paths.map((p: any) => ({
             id: p.id,
             name: p.name,
             value: p.customData?.valor || p.customData?.value || 30,
             percentage: p.customData?.porcentaje || p.customData?.percentage || 10,
             d: p.d,
-            color: p.customData?.fill || p.visualStyles?.fillColor || p.fill || '#10b981'
+            color: p.customData?.fill || p.visualStyles?.fillColor || p.fill || '#10b981',
+            layer: p.category || 'Mundo',
+            visualStyles: p.visualStyles || { fillColor: p.customData?.fill || '#10b981', strokeColor: '#0f172a', strokeWidth: 1.2 },
+            customData: p.customData || {}
           }));
           data['WORLD_MAP'] = {
             ...(data['WORLD_MAP'] || defaultWorldMapData),
             municipalities: worldMunis
           };
+        } else {
+          // Auto-reparación segura de Mundo sin tocar Argentina
+          const cleanWorld = repairAndRestoreWorldMap();
+          data['WORLD_MAP'] = {
+            ...defaultWorldMapData,
+            municipalities: cleanWorld.paths.map((p: any) => ({
+              id: p.id,
+              name: p.name,
+              value: p.customData?.valor || 30,
+              percentage: p.customData?.porcentaje || 10,
+              d: p.d,
+              color: p.customData?.fill || '#10b981',
+              layer: p.category || 'Mundo',
+              visualStyles: p.visualStyles,
+              customData: p.customData
+            }))
+          };
         }
       } catch (err) {
         console.error("Error al restaurar WORLD_MAP guardado en canvas:", err);
       }
+    } else {
+      // Si no existe, inicializa con el mapa limpio
+      data['WORLD_MAP'] = {
+        ...defaultWorldMapData
+      };
     }
     
     // Inyección automatizada de las Islas Malvinas (AR-MLV) en alta definición si no están personalizadas
@@ -490,21 +530,43 @@ function AppContent() { // Componente que maneja el estado global y las rutas de
     handleSelectNode(id); // Reenvía la llamada a handleSelectNode
   }; // Fin de handleSelectSubdivision
 
-  // INTEGRACIÓN DEL HOOK PERSONALIZADO useProjectManager PARA GESTIÓN DE ARCHIVOS Y DESTELLOS DE SEGURIDAD
+  // ESTADO PARA VISIBILIDAD Y PESTAÑA INICIAL DEL MODAL DE PERSISTENCIA MULTIDESTINO
+  const [isDestinationsModalOpen, setIsDestinationsModalOpen] = useState<boolean>(false);
+  const [destinationsModalTab, setDestinationsModalTab] = useState<ModalTab>('save');
+
+  // Función de apertura asistida de destinos con selección de pestaña
+  const handleOpenDestinations = (tab: ModalTab = 'save') => {
+    setDestinationsModalTab(tab);
+    setIsDestinationsModalOpen(true);
+  };
+
+  // INTEGRACIÓN DEL HOOK PERSONALIZADO useProjectManager PARA GESTIÓN DE ARCHIVOS Y PERSISTENCIA UNIFICADA
   const {
     projectName,
     setProjectName,
+    projectId,
+    setProjectId,
+    driveFileId,
+    fileHandle,
     isDirty,
     setIsDirty,
+    isSaving,
+    lastSaveStatus,
     handleNew: handleNewProject,
     handleOpen: handleOpenProject,
     handleSave: handleSaveProject,
     handleSaveAs: handleSaveAsProject,
-    handleClose: handleCloseProject
+    handleClose: handleCloseProject,
+    handleSaveToDatabase,
+    handleSaveToDrive,
+    handleSaveToDisk,
+    handleLoadFromDatabase,
+    handleLoadFromGoogleDrive,
+    getProjectPayload
   } = useProjectManager(
     {
       projectName: 'Proyecto Sin Título',
-      version: '1.0.0',
+      version: '2.1.0',
       timestamp: new Date().toISOString(),
       activeMapLevel,
       selectedProvinceId,
@@ -875,22 +937,36 @@ function AppContent() { // Componente que maneja el estado global y las rutas de
         const countryMap = next['COUNTRY_MAP']; // Obtiene la referencia al mapa principal de Argentina
         if (countryMap && Array.isArray(countryMap.municipalities)) { // Si existe la lista de municipios en el mapa macro
           const targetSubId = updatedProvince.id.toLowerCase().replace(/^ar-/, ''); // Normaliza el ID a minúsculas sin prefijo
+          const isMalvinas = updatedProvince.id.toLowerCase().includes('malvin') || updatedProvince.id.toLowerCase().includes('mlv') || (updatedProvince.name || '').toLowerCase().includes('malvin');
+          
           const subIndex = countryMap.municipalities.findIndex(m => {
             const mId = m.id.toLowerCase().replace(/^ar-/, ''); // Normaliza el ID del mapa macro
             const mName = (m.name || '').toLowerCase(); // Normaliza nombre del mapa macro
             const uName = (updatedProvince.name || '').toLowerCase(); // Normaliza nombre de la provincia actualizada
-            return mId === targetSubId || m.id.toLowerCase() === updatedProvince.id.toLowerCase() || (mName && uName && (mName === uName || mName.includes(uName) || uName.includes(mName)));
+            return (
+              mId === targetSubId ||
+              m.id.toLowerCase() === updatedProvince.id.toLowerCase() ||
+              (mName && uName && (mName === uName || mName.includes(uName) || uName.includes(mName))) ||
+              (isMalvinas && (mName.includes('malvin') || m.id === 'AR-MLV' || m.id === 'MALVINAS'))
+            );
           }); // Busca la subdivisión en el mapa macro
 
           if (subIndex !== -1) { // Si la subdivisión existe dentro del mapa macro de Argentina
-            const origRefD = countryMap.municipalities[subIndex].d || provincePaths.find(p => p.id === updatedProvince.id || p.id.toLowerCase() === targetSubId)?.d || ''; // Busca la geometría original de referencia
+            const origRefD = countryMap.municipalities[subIndex].d || provincePaths.find(p => p.id === updatedProvince.id || p.id.toLowerCase() === targetSubId || (isMalvinas && p.id === 'AR-MLV'))?.d || ''; // Busca la geometría original de referencia
             const targetBBox = getPathBBox(origRefD); // Calcula el Bounding Box original en el mapa de Argentina
-            const unifiedD = (updatedProvince.municipalities || []).map(m => (m.d || '').trim()).filter(Boolean).join(' '); // Une los trazados vectoriales en una única figura unificada
+            const unifiedD = (updatedProvince.municipalities && updatedProvince.municipalities.length > 0)
+              ? updatedProvince.municipalities.map(m => (m.d || '').trim()).filter(Boolean).join(' ')
+              : (updatedProvince.d || ''); // Obtiene los trazados vectoriales
 
             if (unifiedD) { // Si se obtuvo una geometría válida
-              let fittedD = unifiedD; // Inicializa con la geometría sin escalar
-              if (targetBBox && targetBBox.width > 1 && targetBBox.height > 1) { // Si las dimensiones originales son válidas
-                fittedD = fitPathToBBox(unifiedD, targetBBox); // Escala y posiciona quirúrgicamente al tamaño original en el mapa de Argentina
+              let fittedD = unifiedD; // Preserva exactamente la posición, arrastre y escala definidos por el usuario en el lienzo
+              
+              // Solo si la geometría proviene de una importación desacoplada con origen en (0,0) y sin coordenadas geográficas reales
+              const currentBBox = getPathBBox(unifiedD);
+              if (targetBBox && targetBBox.width > 1 && targetBBox.height > 1 && currentBBox) {
+                if (Math.abs(currentBBox.x - targetBBox.x) > 300 && currentBBox.x < 100 && currentBBox.y < 100) {
+                  fittedD = fitPathToBBox(unifiedD, targetBBox); // Auto-posiciona inicialmente al espacio geográfico de Argentina
+                }
               }
 
               const updatedCountryMunicipalities = [...countryMap.municipalities]; // Clona el arreglo de municipios
@@ -920,12 +996,18 @@ function AppContent() { // Componente que maneja el estado global y las rutas de
               if (!Array.isArray(calList) || calList.length === 0) { // Si estaba vacía
                 calList = provincePaths.map(p => ({ id: p.id, d: p.d })); // Carga la lista nativa de provincias
               }
-              const calIdx = calList.findIndex(item => item.id === subId || item.id.toLowerCase() === targetSubId); // Busca el índice
-              if (calIdx !== -1) { // Si existe
-                calList[calIdx].d = fittedD; // Actualiza la geometría
-              } else { // Si es nueva
-                calList.push({ id: subId, d: fittedD }); // Inserta la nueva geometría
-              }
+
+              const syncIds = [subId, updatedProvince.id, ...(isMalvinas ? ['AR-MLV', 'MALVINAS'] : [])];
+              syncIds.forEach(idToSync => {
+                const normSync = idToSync.toLowerCase().replace(/^ar-/, '');
+                const calIdx = calList.findIndex(item => item.id === idToSync || item.id.toLowerCase() === idToSync.toLowerCase() || item.id.toLowerCase().replace(/^ar-/, '') === normSync);
+                if (calIdx !== -1) { // Si existe
+                  calList[calIdx].d = fittedD; // Actualiza la geometría
+                } else { // Si es nueva
+                  calList.push({ id: idToSync, d: fittedD }); // Inserta la nueva geometría
+                }
+              });
+
               safeSetItem('argentina_calibrated_map_paths', JSON.stringify(calList)); // Guarda la lista calibrada
               safeSetItem('argentina_paths_last_updated', Date.now().toString()); // Marca de tiempo para forzar re-render
 
@@ -956,6 +1038,35 @@ function AppContent() { // Componente que maneja el estado global y las rutas de
     setProvincesData(loaded); // Sobrescribe el diccionario en el estado
     safeSetItem('argentina_data_custom_provinces', JSON.stringify(loaded)); // Guarda el diccionario completo de forma segura
   }; // Fin de handleLoadAllProvinces
+
+  // FUNCIÓN PURA PARA RECUPERAR Y RESTAURAR EL MAPA MUNDI COMPLETO (TODOS LOS PAÍSES Y CONTINENTES)
+  // Sin tocar Argentina ni ninguna de las 24 provincias
+  const handleRestoreWorldMap = () => {
+    const cleanEntity = repairAndRestoreWorldMap();
+    const worldMunis = cleanEntity.paths.map((p: any) => ({
+      id: p.id,
+      name: p.name,
+      value: p.customData?.valor || 30,
+      percentage: p.customData?.porcentaje || 10,
+      d: p.d,
+      color: p.customData?.fill || p.visualStyles?.fillColor || '#10b981',
+      layer: p.category || 'Mundo',
+      visualStyles: p.visualStyles || { fillColor: p.customData?.fill || '#10b981', strokeColor: '#0f172a', strokeWidth: 1.2 },
+      customData: p.customData || {}
+    }));
+
+    setProvincesData(prev => ({
+      ...prev,
+      WORLD_MAP: {
+        ...(prev['WORLD_MAP'] || defaultWorldMapData),
+        id: 'WORLD_MAP',
+        name: 'Mapa Mundial',
+        abbreviation: 'MUNDO',
+        municipalities: worldMunis
+      }
+    }));
+    setIsDirty(true);
+  };
 
   // Conversión de la parcela o subdivisión seleccionada al formato de entidad editable para el PropertyEditor
   const selectedSubdivision = selectedProvince.municipalities?.find(m => m.id === selectedSubdivisionId); // Busca el objeto seleccionado
@@ -1102,10 +1213,11 @@ function AppContent() { // Componente que maneja el estado global y las rutas de
         isDirty={isDirty} // Pasa el estado booleano de cambios sin guardar
         onProjectNameChange={handleProjectNameChange} // Pasa el manejador para renombrar el proyecto
         onNewProject={handleNewProject} // Pasa el manejador para crear nuevo proyecto
-        onOpenProject={handleOpenProject} // Pasa el manejador para abrir proyecto JSON
-        onSaveProject={handleSaveProject} // Pasa el manejador para guardar el proyecto activo
-        onSaveAsProject={handleSaveAsProject} // Pasa el manejador para Guardar Como
+        onOpenProject={() => handleOpenDestinations('open_db')} // Pasa el manejador para abrir proyectos desde BD, Drive o Disco
+        onSaveProject={handleSaveProject} // Pasa el manejador para guardar el proyecto activo in-place
+        onSaveAsProject={() => handleOpenDestinations('save')} // Pasa el manejador para Guardar Como (abre el panel de selección de destino y nombre)
         onCloseProject={handleCloseProject} // Pasa el manejador para cerrar el proyecto y restablecer el lienzo
+        onOpenDestinationsModal={(tab) => handleOpenDestinations(tab || 'save')} // Abre el Centro de Persistencia (BD, Drive, Disco)
         onLogin={(remember: boolean) => { // Manejador de inicio de sesión
           handleSelectRole('admin'); // Inicia sesión asignando rol de admin
         }}
@@ -1155,6 +1267,7 @@ function AppContent() { // Componente que maneja el estado global y las rutas de
                 navPath={navPath} // Pasa el historial de navegación dinámico universal
                 goBackToNode={goBackToNode} // Pasa el manejador para retroceder en nodos dinámicos
                 onNavigateToNode={MapsToNode} // Pasa la función para avanzar hacia un nuevo nodo dinámico
+                onRestoreWorldMap={handleRestoreWorldMap} // Pasa la función de recuperación segura del mapa mundi
               />
             </main>
 
@@ -1280,6 +1393,7 @@ function AppContent() { // Componente que maneja el estado global y las rutas de
                   onBreadcrumbClick={handleBreadcrumbClick} // Pasa el manejador de clics en migas
                   navPath={navPath} // Pasa el historial de navegación dinámico universal
                   goBackToNode={goBackToNode} // Pasa la función para retroceder en las migas dinámicas
+                  onRestoreWorldMap={handleRestoreWorldMap} // Pasa la función de recuperación segura del mapa mundi
                 />
                 
                 {/* Muestra el centro de gestión de datos WorkspaceHub si el usuario es administrador */}
@@ -1470,6 +1584,28 @@ function AppContent() { // Componente que maneja el estado global y las rutas de
           handleSaveProfile(updated); // Persiste los cambios del perfil
           setIsProfileModalOpen(false); // Cierra el modal
         }} // Fin de onSave
+      />
+
+      {/* Modal de Centro de Persistencia y Destinos (Base de Datos, Google Drive, Disco Físico) */}
+      <ProjectDestinationsModal
+        isOpen={isDestinationsModalOpen}
+        initialTab={destinationsModalTab}
+        onClose={() => setIsDestinationsModalOpen(false)}
+        projectName={projectName}
+        onRenameProject={setProjectName}
+        onSaveInPlace={handleSaveProject}
+        onSaveAsNewCopy={handleSaveAsProject}
+        onSaveToDatabase={handleSaveToDatabase}
+        onSaveToDrive={handleSaveToDrive}
+        onSaveToDisk={handleSaveToDisk}
+        onLoadProject={handleLoadFromDatabase}
+        onLoadFromGoogleDrive={handleLoadFromGoogleDrive}
+        onLoadFromDisk={handleOpenProject}
+        isDirty={isDirty}
+        lastSaveStatus={lastSaveStatus}
+        currentProjectId={projectId}
+        currentDriveFileId={driveFileId}
+        currentPayload={getProjectPayload ? getProjectPayload() : undefined}
       />
     </div>
   ); // Fin del retorno JSX de AppContent

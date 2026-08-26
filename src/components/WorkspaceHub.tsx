@@ -107,6 +107,10 @@ export default function WorkspaceHub({
       
       if (token) {
         setAccessToken(token);
+        try {
+          localStorage.setItem('gdrive_access_token', token);
+          (window as any).__GOOGLE_WORKSPACE_ACCESS_TOKEN__ = token;
+        } catch (e) {}
         addLog('Credencial de Google Workspace obtenida correctamente.');
         // Fetch contacts immediately to populate emails
         fetchGoogleContacts(token);
@@ -125,6 +129,8 @@ export default function WorkspaceHub({
 
   const handleSignOut = async () => {
     try {
+      localStorage.removeItem('gdrive_access_token');
+      (window as any).__GOOGLE_WORKSPACE_ACCESS_TOKEN__ = null;
       await signOut(auth);
     } catch (err: any) {
       addLog(`Error al cerrar sesión: ${err.message}`);

@@ -1,9 +1,11 @@
 {
-  "projectId": "fixturemundial26apuesta",
-  "appId": "1:19478774415:web:56c15e5c015fd3f7e266fa",
-  "apiKey": "AIzaSyB-LNGrldol272KpeMGnwnDm59kuJApL0A",
-  "authDomain": "fixturemundial26apuesta.firebaseapp.com",
-  "storageBucket": "fixturemundial26apuesta.firebasestorage.app",
-  "messagingSenderId": "19478774415",
-  "measurementId": ""
+  "projectId": "gen-lang-client-0351603078",
+  "appId": "1:396575549177:web:261dc60e7a5a2a33a76428",
+  "apiKey": "AIzaSyBirv_ELSBJk0dzHJq2cxaNoGVQgkojNHo",
+  "authDomain": "gen-lang-client-0351603078.firebaseapp.com",
+  "storageBucket": "gen-lang-client-0351603078.firebasestorage.app",
+  "messagingSenderId": "396575549177",
+  "measurementId": "",
+  "oAuthClientId": "396575549177-bh54d4mb592a83lrorb5vcofs1kodkru.apps.googleusercontent.com",
+  "recaptchaSiteKey": ""
 }

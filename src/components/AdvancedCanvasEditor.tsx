@@ -12,13 +12,25 @@ import {
   FileUp, Sparkles, MapPin, Globe, Palette, ChevronDown, Search, Link,
   Hand, PanelLeftClose, PanelLeftOpen, PanelRightClose, PanelRightOpen, ChevronLeft, ChevronRight,
   Target, X, CheckSquare, Undo2, Redo2, RotateCcw, XCircle, History, CheckCircle,
-  Folder, FolderOpen, Spline, Unlink
+  Folder, FolderOpen, Spline, Unlink, MousePointer, GitMerge, Puzzle
 } from 'lucide-react'; // Íconos Lucide para la interfaz tipo CorelDRAW, Figma y calibrador vector
 import { VectorPathItem, VectorMapEntity, UserRole, UserProfile, ProvinceData, NavNode } from '../types'; // Interfaces de TypeScript
 import { safeSetItem, safeGetItem } from '../lib/storage'; // Funciones de almacenamiento seguro
 import { getPathBBox, getMultiplePathsBBox, fitPathToBBox, translatePathD, scalePathD } from '../lib/mapUtils'; // Calculadoras de Bounding Box y transformaciones espaciales
 import { provincePaths } from '../data/provincePaths'; // Moldes nativos vectoriales de la República Argentina (REGLA INTOCABLE)
+import { defaultWorldVectorMap } from '../data/defaultWorldMap'; // Moldes vectoriales mundiales
 import { mockProvincesData } from '../data/mockData'; // Datos iniciales con indicadores provinciales
+import { AddElementModal } from './AddElementModal'; // Modal para agregar nuevos elementos, miembros o territorios sin reemplazar nada
+import { MapSafetyConfirmModal } from './MapSafetyConfirmModal'; // Modal de advertencia y confirmación previa con imágenes SVG
+import { 
+  CANONICAL_TIERRA_DEL_FUEGO_D, 
+  CANONICAL_MALVINAS_D, 
+  isPathMatchingMalvinas, 
+  isPathMatchingTierraDelFuego, 
+  restoreTierraDelFuegoToOriginal, 
+  restoreMalvinasToOriginal,
+  autoRepairArgentinaMap 
+} from '../utils/mapRecovery'; // Motor de recuperación geográfica y blindaje de territorios históricos
 
 // Interfaz que define las propiedades que recibe el Súper Editor de Espacios Vectoriales
 interface AdvancedCanvasEditorProps {
@@ -342,168 +354,349 @@ const parseVectorContentWithAI = (
   return { paths: importedPaths, title: detectedTitle || fileName.replace(/\.[^/.]+$/, "") };
 };
 
-// Función auxiliar para construir el mapa contextual en base al nivel activo y la región seleccionada
-const getInitialContextualMap = (
-  province?: ProvinceData, // Objeto de provincia/nivel territorial activo
-  urlParentId?: string | null // Referencia enviada por URL si existe
+// FUNCIÓN DE CONSTRUCCIÓN DE MAPA INICIAL SEGÚN CONTEXTO (PRESERVA SIEMPRE TODO EL MAPA COMPLETO)
+export const getInitialContextualMap = (
+  province?: ProvinceData | null, // Provincia o entidad seleccionada en la vista general
+  urlParentId?: string | null, // ID del padre obtenido por URL query param
+  selectedSubdivisionId?: string | null, // ID de la subdivisión/polígono seleccionado para resaltado
+  allProvinces?: Record<string, ProvinceData>, // Diccionario global de todas las provincias
+  isolateSelectionExplicitly: boolean = false // Si es true (solo si el usuario activa el modo aislamiento), aísla la selección
 ): VectorMapEntity => {
-  // 1. Si la provincia seleccionada tiene municipios/subdivisiones con vectores SVG definidos, los carga directamente en el lienzo
-  if (province && province.municipalities && province.municipalities.length > 0) {
-    const validSubs = province.municipalities.filter(m => m.d && m.d.trim().length > 0); // Filtra los municipios con vector SVG 'd' no vacío
-    if (validSubs.length > 0) { // Si se encontraron polígonos válidos
-      return { // Devuelve el objeto del mapa vectorial con los polígonos del mapa activo
-        id: `map-${province.id.toLowerCase()}`, // ID del mapa basado en el territorio activo
-        title: `Mapa Vectorial Activo - ${province.name}`, // Título contextual del mapa
-        level: province.id === 'WORLD_MAP' ? 'mundo' : province.id === 'CONTINENT_MAP' ? 'continente' : 'provincia', // Nivel jerárquico
-        parentId: province.id, // ID del padre
-        ownerId: 'system', // Propietario por defecto
-        isApproved: true, // Estado aprobado
-        paths: validSubs.map(m => ({ // Mapea cada subdivisión a un ítem vectorial con todos sus estilos
-          id: m.id, // ID del polígono
-          name: m.name, // Nombre de la división o país
-          d: m.d!, // Comando vectorial 'd'
-          category: province.id === 'WORLD_MAP' ? 'pais' : province.id === 'CONTINENT_MAP' ? 'pais' : 'municipio', // Categoría
-          ownerId: 'system', // Propietario
-          visualStyles: { // Preserva los estilos de color
-            fillColor: m.visualStyles?.fillColor || m.color || '#10b981', // Color de relleno
-            strokeColor: m.visualStyles?.strokeColor || '#0f172a', // Color de contorno
-            strokeWidth: m.visualStyles?.strokeWidth || 1 // Grosor de línea
+  // CASO 1: Si el usuario pidió explícitamente aislar la subdivisión seleccionada
+  if (isolateSelectionExplicitly && selectedSubdivisionId) {
+    const subNormalized = selectedSubdivisionId.toLowerCase().replace(/^ar-/, '');
+    const isMalvinas = selectedSubdivisionId.toLowerCase().includes('malvin') || selectedSubdivisionId.toLowerCase().includes('mlv');
+
+    const foundSub = province?.municipalities?.find(m => 
+      m.id === selectedSubdivisionId || 
+      m.id.toLowerCase() === selectedSubdivisionId.toLowerCase() ||
+      m.id.toLowerCase().replace(/^ar-/, '') === subNormalized ||
+      (m.name && m.name.toLowerCase() === selectedSubdivisionId.toLowerCase()) ||
+      (isMalvinas && m.name.toLowerCase().includes('malvin'))
+    );
+
+    const foundInPaths = provincePaths.find(p => 
+      p.id === selectedSubdivisionId || 
+      p.id.toLowerCase() === selectedSubdivisionId.toLowerCase() ||
+      p.id.toLowerCase().replace(/^ar-/, '') === subNormalized ||
+      p.name.toLowerCase() === selectedSubdivisionId.toLowerCase() ||
+      (isMalvinas && (p.name.toLowerCase().includes('malvin') || p.id === 'AR-MLV'))
+    );
+
+    const foundInAll = allProvinces ? Object.values(allProvinces).find(p => 
+      p.id === selectedSubdivisionId || 
+      p.id.toLowerCase() === selectedSubdivisionId.toLowerCase() ||
+      p.id.toLowerCase().replace(/^ar-/, '') === subNormalized ||
+      p.name.toLowerCase() === selectedSubdivisionId.toLowerCase() ||
+      (isMalvinas && (p.name.toLowerCase().includes('malvin') || p.id === 'AR-MLV'))
+    ) : undefined;
+
+    const matchedItem = foundSub || foundInPaths || foundInAll;
+
+    if (matchedItem) {
+      const subItems = (matchedItem as any).customData?.subItems;
+      if (Array.isArray(subItems) && subItems.length > 0) {
+        return {
+          id: `map-subdivision-${matchedItem.id.toLowerCase()}`,
+          title: `Edición Aislada - ${matchedItem.name}`,
+          level: 'subdivision',
+          parentId: province?.id || 'country',
+          ownerId: 'system',
+          isApproved: true,
+          paths: subItems,
+          transform: { scale: 1, translateX: 0, translateY: 0, aspectRatioLocked: true },
+          createdAt: new Date().toISOString(),
+          updatedAt: new Date().toISOString()
+        };
+      }
+
+      const itemD = matchedItem.d || (foundInPaths ? foundInPaths.d : '');
+      return {
+        id: `map-subdivision-${matchedItem.id.toLowerCase()}`,
+        title: `Edición Aislada - ${matchedItem.name}`,
+        level: 'subdivision',
+        parentId: province?.id || 'country',
+        ownerId: 'system',
+        isApproved: true,
+        paths: [{
+          id: matchedItem.id,
+          name: matchedItem.name,
+          d: itemD,
+          category: 'subdivision',
+          ownerId: 'system',
+          visualStyles: {
+            fillColor: (matchedItem as any).visualStyles?.fillColor || (matchedItem as any).color || '#10b981',
+            strokeColor: (matchedItem as any).visualStyles?.strokeColor || '#0f172a',
+            strokeWidth: 1.5
           },
-          customData: { // Preserva metadatos
-            valor: m.value, // Métrica
-            porcentaje: m.percentage, // Porcentaje
-            fill: m.visualStyles?.fillColor || m.color || '#10b981', // Color
-            stroke: m.visualStyles?.strokeColor || '#0f172a', // Contorno
-            ...(m.customData || {}) // Copia de propiedades personalizadas
+          customData: {
+            valor: (matchedItem as any).value || 35,
+            porcentaje: (matchedItem as any).percentage || 18,
+            fill: (matchedItem as any).color || '#10b981',
+            layer: 'subdivision'
           }
-        })),
-        transform: { // Matriz de transformación inicial
-          scale: province.mapTransform?.scale || 1, // Escala zoom
-          translateX: province.mapTransform?.panX || 0, // Desplazamiento X
-          translateY: province.mapTransform?.panY || 0, // Desplazamiento Y
-          aspectRatioLocked: true // Candado de proporción
-        },
-        createdAt: new Date().toISOString(), // Fecha creación
-        updatedAt: new Date().toISOString() // Fecha actualización
+        }],
+        transform: { scale: 1, translateX: 0, translateY: 0, aspectRatioLocked: true },
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString()
       };
     }
   }
 
-  // 2. Si es EXPLICITAMENTE Argentina o nivel País / Nacional sin subdivisiones personalizadas, carga los 24 trazos nativos con metadatos completos
-  if (province && (province.id === 'country' || province.id === 'AR' || province.id === 'ARGENTINA')) { // Verifica si el nivel territorial es Argentina
-    return { // Retorna la entidad vectorial nacional
-      id: 'map-argentina-nativa', // Identificador del mapa argentino
-      title: 'Mapa Vectorial Nativo de la República Argentina (24 Provincias)', // Título descriptivo
-      level: 'pais', // Nivel de país
-      parentId: 'WORLD', // Padre mundo
-      ownerId: 'system', // Propietario del sistema
-      isApproved: true, // Aprobado por defecto
-      paths: provincePaths.map(p => ({ // Mapea cada una de las 24 provincias nativas con datos editables
-        id: p.id, // ID único de la provincia (ej: AR-B)
-        name: p.name, // Nombre de la provincia (ej: Buenos Aires)
-        d: p.d, // Vector o geometría SVG
-        category: 'provincia', // Categoría inicial del trazo
-        ownerId: 'system', // Propietario del elemento
-        visualStyles: { // Estilos visuales de relleno y borde
-          fillColor: (p as any).color || '#10b981', // Color de relleno inicial por defecto
-          strokeColor: '#0f172a', // Color del contorno del vector
-          strokeWidth: 1.5 // Grosor del contorno
-        }, // Fin de estilos visuales
-        customData: { // Metadatos para el Inspector de Trazo y estadísticas
-          valor: (p as any).value !== undefined ? (p as any).value : 45, // Métrica de valor o población
-          porcentaje: (p as any).percentage !== undefined ? (p as any).percentage : 22, // Porcentaje o tasa indicadora
-          fill: (p as any).color || '#10b981', // Color personalizado de relleno
-          layer: 'provincia', // Capa territorial
-          ...(p as any).customData || {} // Mantiene propiedades previas si existen
-        } // Fin de metadatos personalizados
-      })), // Fin del mapeo de provincias
-      transform: { // Transformación centrada del lienzo
-        scale: 1, // Escala inicial zoom
-        translateX: 0, // Desplazamiento X
-        translateY: 0, // Desplazamiento Y
-        aspectRatioLocked: true // Bloqueo de relación de aspecto
-      }, // Fin de transformación
-      createdAt: new Date().toISOString(), // Marca de tiempo de creación
-      updatedAt: new Date().toISOString() // Marca de tiempo de actualización
-    }; // Fin de retorno de mapa de Argentina
-  } // Fin de condicional de Argentina
+  // CASO 2: Si es una provincia individual específica con municipios detallados
+  if (province && province.id !== 'COUNTRY_MAP' && province.id !== 'country' && province.id !== 'AR' && province.id !== 'ARGENTINA' && province.id !== 'WORLD_MAP' && province.id !== 'WORLD' && province.id !== 'world') {
+    // Si tiene municipios detallados con trazados SVG 'd'
+    if (province.municipalities && province.municipalities.length > 0) {
+      const validSubs = province.municipalities.filter(m => m.d && m.d.trim().length > 0);
+      if (validSubs.length > 0) {
+        return {
+          id: `map-${province.id.toLowerCase()}`,
+          title: `Mapa Vectorial Completo - ${province.name}`,
+          level: 'provincia',
+          parentId: province.id,
+          ownerId: 'system',
+          isApproved: true,
+          paths: validSubs.map(m => ({
+            id: m.id,
+            name: m.name,
+            d: m.d!,
+            category: 'municipio',
+            ownerId: 'system',
+            visualStyles: {
+              fillColor: m.visualStyles?.fillColor || m.color || '#10b981',
+              strokeColor: m.visualStyles?.strokeColor || '#0f172a',
+              strokeWidth: 1.5
+            },
+            customData: {
+              valor: m.value,
+              porcentaje: m.percentage,
+              fill: m.visualStyles?.fillColor || m.color || '#10b981',
+              stroke: m.visualStyles?.strokeColor || '#0f172a',
+              ...(m.customData || {})
+            }
+          })),
+          transform: {
+            scale: province.mapTransform?.scale || 1,
+            translateX: province.mapTransform?.panX || 0,
+            translateY: province.mapTransform?.panY || 0,
+            aspectRatioLocked: true
+          },
+          createdAt: new Date().toISOString(),
+          updatedAt: new Date().toISOString()
+        };
+      }
+    }
 
-  // 3. Si es una provincia argentina individual (ej: AR-B) sin municipios definidos, busca su contorno en provincePaths.ts
-  if (province) { // Verifica si existe una provincia seleccionada
-    const foundOutline = provincePaths.find(p => p.id === province.id || p.name.toLowerCase() === province.name.toLowerCase()); // Busca coincidencia en el diccionario nativo
-    if (foundOutline) { // Si se encontró la silueta de la provincia
-      return { // Devuelve el mapa vectorial de la silueta provincial
-        id: `map-silueta-${province.id.toLowerCase()}`, // ID del mapa provincial
-        title: `Silueta y Contorno - ${province.name}`, // Título descriptivo de la silueta
-        level: 'provincia', // Nivel provincial
-        parentId: province.id, // Identificador del padre
-        ownerId: 'system', // Propietario del sistema
-        isApproved: true, // Estado aprobado
-        paths: [{ // Silueta única de la provincia con metadatos completos editables
-          id: foundOutline.id, // ID del vector provincial
-          name: foundOutline.name, // Nombre de la provincia
-          d: foundOutline.d, // Geometría vectorial SVG
-          category: 'provincia', // Categoría del trazo
-          ownerId: 'system', // Propietario
-          visualStyles: { // Estilos de color para la silueta
-            fillColor: (province as any).color || (foundOutline as any).color || '#10b981', // Color de relleno
-            strokeColor: '#0f172a', // Color del contorno
-            strokeWidth: 1.5 // Grosor del borde
-          }, // Fin de estilos visuales
-          customData: { // Metadatos del Inspector de Trazo
-            valor: (province as any).population || (province as any).value || 35, // Valor o población
-            porcentaje: (province as any).percentage || 18, // Porcentaje relativo
-            fill: (province as any).color || (foundOutline as any).color || '#10b981', // Color de relleno
-            layer: 'provincia' // Nombre de la capa
-          } // Fin de customData
-        }], // Fin de paths
-        transform: { // Transformación inicial centrada
-          scale: 1, // Escala de zoom
-          translateX: 0, // Desplazamiento X
-          translateY: 0, // Desplazamiento Y
-          aspectRatioLocked: true // Relación de aspecto bloqueada
-        }, // Fin de transform
-        createdAt: new Date().toISOString(), // Marca de tiempo
-        updatedAt: new Date().toISOString() // Marca de tiempo
-      }; // Fin de retorno
-    } // Fin de verificación de foundOutline
-  } // Fin de verificación de province
+    // Si no tiene municipios, devolvemos el mapa nacional completo resaltando esta provincia para mantener el contexto global
+    return {
+      id: `map-contexto-${province.id.toLowerCase()}`,
+      title: `Mapa Nacional con foco en ${province.name}`,
+      level: 'pais',
+      parentId: 'WORLD',
+      ownerId: 'system',
+      isApproved: true,
+      paths: provincePaths.map(p => {
+        const isMatch = p.id === province.id || p.id.toLowerCase() === province.id.toLowerCase() || p.id.toLowerCase().replace(/^ar-/, '') === province.id.toLowerCase().replace(/^ar-/, '') || p.name.toLowerCase() === province.name.toLowerCase();
+        return {
+          id: p.id,
+          name: p.name,
+          d: isMatch && province.d ? province.d : p.d,
+          category: 'provincia',
+          ownerId: 'system',
+          visualStyles: {
+            fillColor: isMatch ? ((province as any).color || '#10b981') : ((p as any).color || '#334155'),
+            strokeColor: isMatch ? '#38bdf8' : '#0f172a',
+            strokeWidth: isMatch ? 2.5 : 1.2
+          },
+          customData: {
+            valor: isMatch ? ((province as any).population || (province as any).value || 35) : (p as any).value || 25,
+            porcentaje: isMatch ? ((province as any).percentage || 18) : (p as any).percentage || 10,
+            fill: isMatch ? ((province as any).color || '#10b981') : ((p as any).color || '#334155'),
+            layer: 'provincia'
+          }
+        };
+      }),
+      transform: { scale: 1, translateX: 0, translateY: 0, aspectRatioLocked: true },
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString()
+    };
+  }
 
-  // 4. Para cualquier otra región o vista por defecto, hereda automáticamente los 24 trazados nativos de provincePaths.ts
-  return { // Devuelve la entidad vectorial con las 24 provincias por defecto
-    id: `map-nuevo-${province ? province.id.toLowerCase() : 'argentina'}`, // ID del mapa
-    title: `Lienzo Vectorial - ${province ? province.name : 'Argentina (24 Provincias)'}`, // Título
-    level: province ? (province.id === 'WORLD_MAP' ? 'mundo' : province.id === 'CONTINENT_MAP' ? 'continente' : 'pais') : 'pais', // Nivel
-    parentId: urlParentId || 'WORLD', // Padre
-    ownerId: 'system', // Propietario
-    isApproved: true, // Aprobado
-    paths: provincePaths.map(p => ({ // Inyecta las 24 provincias nativas con datos completos
-      id: p.id, // ID único
-      name: p.name, // Nombre
-      d: p.d, // Geometría SVG
-      category: 'provincia', // Categoría
-      ownerId: 'system', // Propietario
-      visualStyles: { // Estilos visuales
-        fillColor: (p as any).color || '#10b981', // Color de relleno
-        strokeColor: '#0f172a', // Color de borde
-        strokeWidth: 1.5 // Grosor de borde
-      }, // Fin de visualStyles
-      customData: { // Metadatos para el inspector
-        valor: (p as any).value !== undefined ? (p as any).value : 40, // Métrica de valor
-        porcentaje: (p as any).percentage !== undefined ? (p as any).percentage : 20, // Porcentaje
-        fill: (p as any).color || '#10b981', // Color
-        layer: 'provincia' // Capa
-      } // Fin de customData
-    })), // Fin del mapeo de provincias
-    transform: { // Transformación por defecto
-      scale: 1, // Escala
-      translateX: 0, // Pan X
-      translateY: 0, // Pan Y
-      aspectRatioLocked: true // Candado
-    }, // Fin de transform
-    createdAt: new Date().toISOString(), // Fecha creación
-    updatedAt: new Date().toISOString() // Fecha actualización
-  }; // Fin de retorno por defecto
+  // CASO 2.5: Nivel Global / Mundial (WORLD_MAP)
+  if (province && (province.id === 'WORLD_MAP' || province.id === 'world' || province.id === 'MUNDO')) {
+    // 1. Si la entidad mundial ya contiene municipios o polígonos detallados (ej: 868 trazados de mapa detallado), preservarlos siempre
+    if (province.municipalities && province.municipalities.length > 0) {
+      const validSubs = province.municipalities.filter(m => m.d && m.d.trim().length > 0);
+      if (validSubs.length > 0) {
+        return {
+          id: `map-world-${province.id.toLowerCase()}`,
+          title: province.name || 'Mapa Vectorial Mundial Completo',
+          level: 'mundo',
+          parentId: 'root',
+          ownerId: 'system',
+          isApproved: true,
+          paths: validSubs.map(m => ({
+            id: m.id,
+            name: m.name,
+            d: m.d!,
+            category: m.layer || 'pais',
+            ownerId: 'system',
+            visualStyles: {
+              fillColor: m.visualStyles?.fillColor || m.color || '#10b981',
+              strokeColor: m.visualStyles?.strokeColor || '#0f172a',
+              strokeWidth: 1.2
+            },
+            customData: {
+              valor: m.value,
+              porcentaje: m.percentage,
+              fill: m.visualStyles?.fillColor || m.color || '#10b981',
+              stroke: m.visualStyles?.strokeColor || '#0f172a',
+              layer: m.layer || 'pais',
+              ...(m.customData || {})
+            }
+          })),
+          transform: { scale: 1, translateX: 0, translateY: 0, aspectRatioLocked: true },
+          createdAt: new Date().toISOString(),
+          updatedAt: new Date().toISOString()
+        };
+      }
+    }
+
+    // 2. Si allProvinces contiene la versión mundial detallada
+    if (allProvinces && (allProvinces['WORLD_MAP']?.municipalities?.length || allProvinces['world']?.municipalities?.length)) {
+      const globalProv = allProvinces['WORLD_MAP'] || allProvinces['world'];
+      const validSubs = globalProv?.municipalities?.filter(m => m.d && m.d.trim().length > 0) || [];
+      if (validSubs.length > 0) {
+        return {
+          id: `map-world-global`,
+          title: globalProv?.name || 'Mapa Vectorial Mundial Completo',
+          level: 'mundo',
+          parentId: 'root',
+          ownerId: 'system',
+          isApproved: true,
+          paths: validSubs.map(m => ({
+            id: m.id,
+            name: m.name,
+            d: m.d!,
+            category: m.layer || 'pais',
+            ownerId: 'system',
+            visualStyles: {
+              fillColor: m.visualStyles?.fillColor || m.color || '#10b981',
+              strokeColor: m.visualStyles?.strokeColor || '#0f172a',
+              strokeWidth: 1.2
+            },
+            customData: {
+              valor: m.value,
+              porcentaje: m.percentage,
+              fill: m.visualStyles?.fillColor || m.color || '#10b981',
+              stroke: m.visualStyles?.strokeColor || '#0f172a',
+              layer: m.layer || 'pais',
+              ...(m.customData || {})
+            }
+          })),
+          transform: { scale: 1, translateX: 0, translateY: 0, aspectRatioLocked: true },
+          createdAt: new Date().toISOString(),
+          updatedAt: new Date().toISOString()
+        };
+      }
+    }
+
+    // 3. Fallback solo si no hay polígonos detallados
+    const worldPaths = defaultWorldVectorMap.map(c => ({
+      id: c.id,
+      name: c.name,
+      d: c.d,
+      category: c.category || 'Mundo',
+      ownerId: 'system',
+      visualStyles: {
+        fillColor: c.color || '#10b981',
+        strokeColor: '#0f172a',
+        strokeWidth: 1.2
+      },
+      customData: {
+        valor: c.value || 30,
+        porcentaje: c.percentage || 10,
+        fill: c.color || '#10b981',
+        layer: c.category || 'Mundo'
+      }
+    }));
+    return {
+      id: 'map-world-global',
+      title: 'Mapa Vectorial Mundial Completo (Todos los Continentes y Países)',
+      level: 'mundo',
+      parentId: 'root',
+      ownerId: 'system',
+      isApproved: true,
+      paths: worldPaths,
+      transform: { scale: 1, translateX: 0, translateY: 0, aspectRatioLocked: true },
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString()
+    };
+  }
+
+  // CASO 3: Nivel Nacional / País (Argentina) sin selección de subdivisión
+  if (province && (province.id === 'country' || province.id === 'AR' || province.id === 'ARGENTINA' || province.id === 'COUNTRY_MAP')) {
+    return {
+      id: 'map-argentina-nativa',
+      title: 'Mapa Vectorial Nativo de la República Argentina (24 Provincias)',
+      level: 'pais',
+      parentId: 'WORLD',
+      ownerId: 'system',
+      isApproved: true,
+      paths: provincePaths.map(p => ({
+        id: p.id,
+        name: p.name,
+        d: p.d,
+        category: 'provincia',
+        ownerId: 'system',
+        visualStyles: {
+          fillColor: (p as any).color || '#10b981',
+          strokeColor: '#0f172a',
+          strokeWidth: 1.5
+        },
+        customData: {
+          valor: (p as any).value !== undefined ? (p as any).value : 45,
+          porcentaje: (p as any).percentage !== undefined ? (p as any).percentage : 22,
+          fill: (p as any).color || '#10b981',
+          layer: 'provincia'
+        }
+      })),
+      transform: { scale: 1, translateX: 0, translateY: 0, aspectRatioLocked: true },
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString()
+    };
+  }
+
+  // CASO 4: Por defecto para cualquier otro caso
+  return {
+    id: `map-nuevo-${province ? province.id.toLowerCase() : 'argentina'}`,
+    title: `Lienzo Vectorial - ${province ? province.name : 'Argentina (24 Provincias)'}`,
+    level: province ? (province.id === 'WORLD_MAP' ? 'mundo' : 'pais') : 'pais',
+    parentId: urlParentId || 'WORLD',
+    ownerId: 'system',
+    isApproved: true,
+    paths: provincePaths.map(p => ({
+      id: p.id,
+      name: p.name,
+      d: p.d,
+      category: 'provincia',
+      ownerId: 'system',
+      visualStyles: {
+        fillColor: (p as any).color || '#10b981',
+        strokeColor: '#0f172a',
+        strokeWidth: 1.5
+      },
+      customData: {
+        valor: (p as any).value !== undefined ? (p as any).value : 40,
+        porcentaje: (p as any).percentage !== undefined ? (p as any).percentage : 20,
+        fill: (p as any).color || '#10b981',
+        layer: 'provincia'
+      }
+    })),
+    transform: { scale: 1, translateX: 0, translateY: 0, aspectRatioLocked: true },
+    createdAt: new Date().toISOString(),
+    updatedAt: new Date().toISOString()
+  };
 }; // Fin de la función getInitialContextualMap
 
 // COMPONENTE PRINCIPAL DEL SÚPER EDITOR CANVAS
@@ -522,9 +715,9 @@ export default function AdvancedCanvasEditor({
 
   // ESTADO DEL MAPA VECTORIAL EN EDICIÓN CON HERENCIA CONTEXTUAL
   const [mapEntity, setMapEntity] = useState<VectorMapEntity>(() => {
-    // Intenta cargar el mapa específico guardado para esta región
-    const provKey = selectedProvince?.id || 'country';
-    const saved = safeGetItem(`argentina_advanced_canvas_map_${provKey}`);
+    // Clave objetivo específica (subdivisión seleccionada o provincia activa)
+    const targetKey = selectedSubdivisionId || selectedProvince?.id || 'country';
+    const saved = safeGetItem(`argentina_advanced_canvas_map_${targetKey}`);
     if (saved) {
       try {
         const parsed = JSON.parse(saved);
@@ -532,6 +725,12 @@ export default function AdvancedCanvasEditor({
           if (urlParentId) {
             parsed.parentId = urlParentId; // Aplica la referencia de la URL si existe
           }
+          parsed.transform = {
+            scale: parsed.transform?.scale ?? 1,
+            translateX: parsed.transform?.translateX ?? 0,
+            translateY: parsed.transform?.translateY ?? 0,
+            aspectRatioLocked: parsed.transform?.aspectRatioLocked ?? true
+          };
           return parsed;
         }
       } catch (e) {
@@ -539,8 +738,12 @@ export default function AdvancedCanvasEditor({
       }
     }
 
-    // Retorna el mapa contextual correspondiente a la provincia/región activa
-    return getInitialContextualMap(selectedProvince, urlParentId);
+    // Retorna el mapa contextual correspondiente al elemento o subdivisión seleccionada en la ruta
+    const initialMap = getInitialContextualMap(selectedProvince, urlParentId, selectedSubdivisionId, allProvinces);
+    if (!initialMap.transform) {
+      initialMap.transform = { scale: 1, translateX: 0, translateY: 0, aspectRatioLocked: true };
+    }
+    return initialMap;
   });
 
   // ESTADO DE APERTURA DE PANELES MODALES Y TEXTO CÓDIGO JSON EN CALIENTE (FASE 3 - AUTO-FILL & BINDING)
@@ -563,6 +766,10 @@ export default function AdvancedCanvasEditor({
   // ESTADO PARA EL MENÚ DESPLEGABLE DE SUSTITUIR SILUETA POR MAPA DE OTRA RUTA (ÍCONO DE MAPA)
   const [activeMapSelectorPathId, setActiveMapSelectorPathId] = useState<string | null>(null); // Almacena el ID del trazo que tiene desplegado el selector de mapa de ruta
   const [mapSelectorSearch, setMapSelectorSearch] = useState<string>(''); // Texto del buscador de mapas de ruta
+
+  // MODO EXCLUSIVO DE INTERACCIÓN EN EL LIENZO: 'select' (SELECCIÓN NORMAL), 'move' (MODO MOVER EXCLUSIVO), 'resize' (MODO REDIMENSIONAR EXCLUSIVO)
+  // ESTE ESTADO BLOQUEA OTRAS OPCIONES PARA EVITAR CONFLICTOS Y FACILITAR EL ARRASTRE Y LA ESCALA TANTO AGRUPADO COMO DESAGRUPADO
+  const [canvasMode, setCanvasMode] = useState<'select' | 'move' | 'resize'>('select'); // Modo activo de interacción en el lienzo
 
   // ESTADOS PARA ARRASTRAR (MOVER / ACOMODAR) Y REDIMENSIONAR (ESCALAR) ELEMENTOS Y SILUETAS EN EL CANVAS
   const [isDraggingElement, setIsDraggingElement] = useState<boolean>(false); // Estado de movimiento de elementos activo
@@ -609,32 +816,193 @@ export default function AdvancedCanvasEditor({
     }));
   }; // Fin de toggleCombinedCollapse
 
-  // ESTADOS Y MANEJADOR PARA EL MODAL DE ASOCIAR MAPA COMPLETO A OTRA RUTA O PROVINCIA
-  const [isAssociateModalOpen, setIsAssociateModalOpen] = useState<boolean>(false);
-  const [targetAssociateRouteId, setTargetAssociateRouteId] = useState<string>('');
-  const [associateSearchQuery, setAssociateSearchQuery] = useState<string>('');
+  // ESTADOS Y MANEJADOR PARA EL MODAL DE ASOCIAR MAPA COMPLETO O TRAZADOS A OTRA RUTA O PROVINCIA
+  const [isAssociateModalOpen, setIsAssociateModalOpen] = useState<boolean>(false); // Control de apertura del modal
+  const [targetAssociateRouteId, setTargetAssociateRouteId] = useState<string>(''); // ID de la ruta / provincia destino seleccionada
+  const [associateSearchQuery, setAssociateSearchQuery] = useState<string>(''); // Filtro de búsqueda en la lista de rutas
+  const [associateMode, setAssociateMode] = useState<'append' | 'replace' | 'merge_single'>('append'); // Modo: Anexar/Combinar, Reemplazar todo, o Fusionar en un solo trazado compuesto
+  const [associateScope, setAssociateScope] = useState<'all' | 'selected'>('selected'); // Alcance: Todo el lienzo o solo los objetos seleccionados (ej: la isla/parte)
 
-  // FUNCIÓN PARA ASOCIAR Y GUARDAR EL MAPA COMPLETO EN OTRA RUTA O PROVINCIA
-  const handleAssociateMapToSelectedRoute = (targetRouteId: string) => {
-    if (!canEditMap || !targetRouteId) return;
-    const targetProv = (allProvinces && allProvinces[targetRouteId]) || mockProvincesData[targetRouteId];
-    const targetName = targetProv?.name || targetRouteId;
+  // ESTADOS PARA EL MODAL DE COMBINAR / ASOCIAR UN OBJETO ESPECÍFICO CON OTRO DEL LIENZO
+  const [isCombineObjectModalOpen, setIsCombineObjectModalOpen] = useState<boolean>(false); // Modal de combinación entre objetos
+  const [combineSourcePathId, setCombineSourcePathId] = useState<string | null>(null); // Objeto de origen (ej: la isla o recorte)
+  const [combineTargetPathId, setCombineTargetPathId] = useState<string>(''); // Objeto destino (ej: el país / continente)
+  const [combineObjectMode, setCombineObjectMode] = useState<'merge_geometry' | 'group_hierarchy' | 'same_identity'>('merge_geometry'); // Modo de unión
+  const [combineObjectSearch, setCombineObjectSearch] = useState<string>(''); // Buscador dentro de los objetos disponibles
 
-    const updatedMunicipalities = mapEntity.paths.map(p => ({
-      id: p.id,
-      name: p.name,
-      value: p.customData?.valor || p.customData?.value || 0,
-      percentage: p.customData?.porcentaje || p.customData?.percentage || 0,
-      d: p.d,
-      color: p.customData?.fill || p.visualStyles?.fillColor || p.fill,
-      layer: p.category || p.customData?.layer || targetName,
-      visualStyles: {
-        fillColor: p.customData?.fill || p.visualStyles?.fillColor || p.fill,
-        strokeColor: p.customData?.stroke || p.visualStyles?.strokeColor || p.stroke,
-        strokeWidth: p.customData?.strokeWidth || p.visualStyles?.strokeWidth || p.strokeWidth
-      },
-      customData: p.customData || {}
-    }));
+  // ESTADO PARA EL MODAL DE CONFIRMACIÓN PREVIA Y SEGURIDAD CON IMÁGENES SVG (SAFETY MODAL)
+  const [safetyModalConfig, setSafetyModalConfig] = useState<{
+    isOpen: boolean; // Estado de visibilidad del modal de confirmación
+    targetId: string; // Identificador del territorio o mapa destino
+    targetName: string; // Nombre descriptivo del territorio o mapa
+    targetCurrentD: string; // Trazado geométrico del estado anterior
+    targetPaths?: VectorPathItem[]; // Colección completa de polígonos/rutas del estado anterior con colores reales
+    proposedD: string; // Trazado geométrico resultante de la edición
+    proposedName?: string; // Nombre del resultado propuesto
+    proposedPaths?: VectorPathItem[]; // Colección completa de polígonos resultantes de la edición con colores reales
+    operationType?: 'silhouette_mutation' | 'save_map' | 'associate_map'; // Tipo de operación realizada
+    onConfirmReplace: () => void; // Callback al confirmar los cambios
+    onConfirmAsIndependent?: () => void; // Callback para incorporar como elemento independiente (ej: Malvinas)
+  }>({
+    isOpen: false, // Inicialmente cerrado
+    targetId: '', // ID vacío inicial
+    targetName: '', // Nombre vacío inicial
+    targetCurrentD: '', // Path SVG vacío inicial
+    targetPaths: undefined, // Sin paths previos iniciales
+    proposedD: '', // Path propuesto vacío
+    proposedPaths: undefined, // Sin paths propuestos iniciales
+    onConfirmReplace: () => {}, // Función vacía por defecto
+    onConfirmAsIndependent: undefined // Sin callback independiente inicial
+  });
+
+  // Estado para desplegar el menú de recuperación de blindaje territorial
+  const [isSafetyRecoveryMenuOpen, setIsSafetyRecoveryMenuOpen] = useState<boolean>(false);
+
+  // FUNCIÓN MEJORADA PARA ASOCIAR Y GUARDAR/COMBINAR EN OTRA RUTA O PROVINCIA
+  const handleAssociateMapToSelectedRoute = (targetRouteId: string) => { // Función principal de asociación a ruta
+    if (!canEditMap || !targetRouteId) return; // Validación de permisos y ruta destino
+    const targetProv = (allProvinces && allProvinces[targetRouteId]) || mockProvincesData[targetRouteId]; // Datos de la ruta destino
+    const targetName = targetProv?.name || targetRouteId; // Nombre amigable de la ruta
+
+    // Determina los trazados que se van a procesar según el alcance seleccionado
+    const pathsToProcess = (associateScope === 'selected' && selectedPathIds.length > 0)
+      ? mapEntity.paths.filter(p => selectedPathIds.includes(p.id))
+      : mapEntity.paths;
+
+    if (pathsToProcess.length === 0) {
+      showNotify("[⚠️] No hay trazados seleccionados para asociar.");
+      return;
+    }
+
+    // Carga los trazados/municipios existentes de la ruta destino si existían previamente
+    let existingMunicipalities: any[] = [];
+    const savedTargetCanvas = safeGetItem(`argentina_advanced_canvas_map_${targetRouteId}`);
+    if (savedTargetCanvas) {
+      try {
+        const parsed = JSON.parse(savedTargetCanvas);
+        if (parsed && Array.isArray(parsed.paths)) {
+          existingMunicipalities = parsed.paths.map((p: any) => ({
+            id: p.id,
+            name: p.name,
+            value: p.customData?.valor || p.customData?.value || 0,
+            percentage: p.customData?.porcentaje || p.customData?.percentage || 0,
+            d: p.d,
+            color: p.customData?.fill || p.visualStyles?.fillColor || p.fill,
+            layer: p.category || p.customData?.layer || targetName,
+            visualStyles: p.visualStyles || {},
+            customData: p.customData || {}
+          }));
+        }
+      } catch (err) {
+        // Fallback a los datos base
+      }
+    }
+
+    if (existingMunicipalities.length === 0 && targetProv?.municipalities && Array.isArray(targetProv.municipalities)) {
+      existingMunicipalities = [...targetProv.municipalities];
+    }
+
+    let finalMunicipalities: any[] = [];
+    let finalCanvasPaths: VectorPathItem[] = [];
+
+    // CASO 1: MODO ANEXAR / COMBINAR CON LA RUTA (Añade las islas o trazados sin borrar el continente o mapa existente)
+    if (associateMode === 'append') {
+      const newItemsConverted = pathsToProcess.map(p => ({
+        id: p.id,
+        name: p.name || `${targetName} - Parte`,
+        value: p.customData?.valor || p.customData?.value || 0,
+        percentage: p.customData?.porcentaje || p.customData?.percentage || 0,
+        d: p.d,
+        color: p.customData?.fill || p.visualStyles?.fillColor || p.fill || '#10b981',
+        layer: p.category || p.customData?.layer || targetName,
+        visualStyles: {
+          fillColor: p.customData?.fill || p.visualStyles?.fillColor || p.fill || '#10b981',
+          strokeColor: p.customData?.stroke || p.visualStyles?.strokeColor || p.stroke || '#0f172a',
+          strokeWidth: p.customData?.strokeWidth || p.visualStyles?.strokeWidth || p.strokeWidth || 1.5
+        },
+        customData: {
+          ...(p.customData || {}),
+          associatedToRoute: targetRouteId,
+          associatedAt: new Date().toISOString()
+        }
+      }));
+
+      // Combina los existentes con los nuevos evitando duplicados exactos de ID
+      const existingFiltered = existingMunicipalities.filter(em => !newItemsConverted.some(ni => ni.id === em.id));
+      finalMunicipalities = [...existingFiltered, ...newItemsConverted];
+
+      // Mapea a paths para el canvas guardado de la ruta destino
+      finalCanvasPaths = finalMunicipalities.map(m => ({
+        id: m.id,
+        name: m.name,
+        d: m.d,
+        category: m.layer || targetName,
+        ownerId: currentUser.id,
+        visualStyles: m.visualStyles,
+        customData: m.customData
+      }));
+    } 
+    // CASO 2: MODO FUSIONAR EN UN SOLO POLÍGONO COMPUESTO (MULTI-PATH SVG)
+    else if (associateMode === 'merge_single') {
+      // Busca la geometría base de la ruta o toma el primer municipio existente o molde
+      const baseD = existingMunicipalities[0]?.d || provincePaths[targetRouteId] || '';
+      const annexedD = pathsToProcess.map(p => p.d.trim()).join(' ');
+      const unifiedD = baseD ? `${baseD} ${annexedD}` : annexedD;
+
+      const unifiedItem = {
+        id: `TERR_${targetRouteId}_UNIFIED`,
+        name: targetName,
+        value: pathsToProcess[0]?.customData?.valor || 0,
+        percentage: pathsToProcess[0]?.customData?.porcentaje || 0,
+        d: unifiedD,
+        color: pathsToProcess[0]?.customData?.fill || '#10b981',
+        layer: targetName,
+        visualStyles: {
+          fillColor: pathsToProcess[0]?.customData?.fill || '#10b981',
+          strokeColor: '#0f172a',
+          strokeWidth: 1.5
+        },
+        customData: {
+          isMergedMultiPath: true,
+          mergedPartsCount: pathsToProcess.length + (baseD ? 1 : 0),
+          associatedToRoute: targetRouteId
+        }
+      };
+
+      finalMunicipalities = [unifiedItem];
+      finalCanvasPaths = [{
+        id: unifiedItem.id,
+        name: unifiedItem.name,
+        d: unifiedItem.d,
+        category: targetName,
+        ownerId: currentUser.id,
+        visualStyles: unifiedItem.visualStyles,
+        customData: unifiedItem.customData
+      }];
+    } 
+    // CASO 3: MODO REEMPLAZAR MAPA COMPLETO (Sobrescribe todo el mapa de la ruta destino)
+    else {
+      finalMunicipalities = pathsToProcess.map(p => ({
+        id: p.id,
+        name: p.name,
+        value: p.customData?.valor || p.customData?.value || 0,
+        percentage: p.customData?.porcentaje || p.customData?.percentage || 0,
+        d: p.d,
+        color: p.customData?.fill || p.visualStyles?.fillColor || p.fill,
+        layer: p.category || p.customData?.layer || targetName,
+        visualStyles: {
+          fillColor: p.customData?.fill || p.visualStyles?.fillColor || p.fill,
+          strokeColor: p.customData?.stroke || p.visualStyles?.strokeColor || p.stroke,
+          strokeWidth: p.customData?.strokeWidth || p.visualStyles?.strokeWidth || p.strokeWidth
+        },
+        customData: p.customData || {}
+      }));
+
+      finalCanvasPaths = pathsToProcess.map(p => ({
+        ...p,
+        category: p.category || targetName
+      }));
+    }
 
     const fallbackProv = mockProvincesData['AR-B'];
     const targetProvinceData: ProvinceData = {
@@ -642,7 +1010,7 @@ export default function AdvancedCanvasEditor({
       id: targetRouteId,
       name: targetName,
       abbreviation: targetProv?.abbreviation || targetRouteId,
-      municipalities: updatedMunicipalities,
+      municipalities: finalMunicipalities,
       mapTransform: {
         scale: mapEntity.transform.scale,
         panX: mapEntity.transform.translateX,
@@ -650,21 +1018,162 @@ export default function AdvancedCanvasEditor({
       }
     };
 
+    // Actualiza el estado global de provincias si se provee el callback
     if (onUpdateProvince) {
       onUpdateProvince(targetProvinceData);
     }
 
+    // Guarda en almacenamiento persistente seguro el mapa vectorizado asociado
     const serializedTarget = JSON.stringify({
       ...mapEntity,
       id: targetRouteId,
-      name: targetName
+      name: targetName,
+      paths: finalCanvasPaths,
+      updatedAt: new Date().toISOString()
     });
 
     safeSetItem(`argentina_advanced_canvas_map_${targetRouteId}`, serializedTarget);
 
-    setIsAssociateModalOpen(false);
-    showNotify(`[🔗] Mapa asociado y guardado exitosamente en la ruta "${targetName}" (${targetRouteId}).`);
-    alert(`¡Asociación Exitosa!\n\nEste mapa ha sido guardado y asociado a la ruta "${targetName}" (${targetRouteId}). Al seleccionar esa ruta en la app, se mostrará este mapa con todas sus formas vectorizadas actualizadas.`);
+    // Sincroniza con las siluetas calibradas a nivel nacional
+    try {
+      const rawCal = safeGetItem('argentina_calibrated_map_paths');
+      let currentCal: Array<{ id: string; name?: string; d: string }> = [];
+      if (rawCal) {
+        const parsed = JSON.parse(rawCal);
+        if (Array.isArray(parsed)) currentCal = parsed;
+      }
+      if (currentCal.length === 0) {
+        currentCal = provincePaths.map(p => ({ id: p.id, name: p.name, d: p.d }));
+      }
+
+      const combinedDForNational = finalCanvasPaths.map(p => p.d.trim()).join(' ');
+      const existingNationalIdx = currentCal.findIndex(p => p.id === targetRouteId);
+      if (existingNationalIdx !== -1) {
+        currentCal[existingNationalIdx].d = combinedDForNational;
+        currentCal[existingNationalIdx].name = targetName;
+      } else {
+        currentCal.push({
+          id: targetRouteId,
+          name: targetName,
+          d: combinedDForNational
+        });
+      }
+
+      safeSetItem('argentina_calibrated_map_paths', JSON.stringify(currentCal));
+      safeSetItem('argentina_paths_last_updated', Date.now().toString());
+      window.dispatchEvent(new CustomEvent('argentina_paths_updated'));
+      window.dispatchEvent(new Event('storage'));
+    } catch (e) {
+      console.error("Error al sincronizar siluetas nacionales:", e);
+    }
+
+    setIsAssociateModalOpen(false); // Cierra el modal de asociación
+    const modeLabel = associateMode === 'append' ? 'combinado y anexado' : associateMode === 'merge_single' ? 'fusionado en un solo polígono' : 'asociado y reemplazado';
+    showNotify(`[🔗] Trazado(s) ${modeLabel} con éxito en la ruta "${targetName}" (${targetRouteId}).`);
+    alert(`¡Asociación Exitosa!\n\nSe han ${modeLabel} ${pathsToProcess.length} trazado(s) en la ruta "${targetName}" (${targetRouteId}).\nAl navegar a esa ruta, se mostrará completo con todas sus partes integradas.`);
+  };
+
+  // FUNCIÓN PARA COMBINAR UN OBJETO ESPECÍFICO (EJ: TRAZADO PDF DE ISLA) CON OTRO OBJETO DEL LIENZO
+  const handleCombineSpecificObjects = (sourceId: string, targetId: string, mode: 'merge_geometry' | 'group_hierarchy' | 'same_identity') => {
+    if (!canEditMap || !sourceId || !targetId || sourceId === targetId) {
+      showNotify("[⚠️] Por favor selecciona dos objetos distintos para combinar.");
+      return;
+    }
+
+    const sourceObj = mapEntity.paths.find(p => p.id === sourceId); // Objeto origen (ej: la isla o recorte)
+    const targetObj = mapEntity.paths.find(p => p.id === targetId); // Objeto destino (ej: el país / continente)
+
+    if (!sourceObj || !targetObj) {
+      showNotify("[⚠️] No se encontraron los objetos seleccionados.");
+      return;
+    }
+
+    // 1. MODO FUSIÓN GEOMÉTRICA (Multi-path SVG: Une coordenadas d en una sola figura compuesta)
+    if (mode === 'merge_geometry') {
+      const combinedD = `${targetObj.d.trim()} ${sourceObj.d.trim()}`; // Geometría multi-polígono
+      const combinedName = targetObj.name || targetObj.id; // Mantiene el nombre del territorio principal
+      const newCombinedId = `COMBINED_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`;
+
+      // Guarda las piezas vivas para poder descombinar cuando se desee
+      const subItems = [
+        ...(targetObj.customData?.subItems || [targetObj]),
+        ...(sourceObj.customData?.subItems || [sourceObj])
+      ];
+
+      const mergedItem: VectorPathItem = {
+        ...targetObj,
+        id: newCombinedId,
+        name: combinedName,
+        d: combinedD,
+        isCombined: true,
+        customData: {
+          ...(targetObj.customData || {}),
+          subItems: JSON.parse(JSON.stringify(subItems)),
+          mergedAt: new Date().toISOString()
+        }
+      };
+
+      setMapEntity(prev => ({
+        ...prev,
+        paths: prev.paths.filter(p => p.id !== sourceId && p.id !== targetId).concat(mergedItem),
+        updatedAt: new Date().toISOString()
+      }));
+
+      setSelectedPathIds([newCombinedId]);
+      showNotify(`[🧩] Se fusionó "${sourceObj.name}" dentro de "${targetObj.name}" formando un territorio completo.`);
+    }
+    // 2. MODO AGRUPACIÓN JERÁRQUICA (Establece un Padre común tipo CorelDRAW)
+    else if (mode === 'group_hierarchy') {
+      const groupName = targetObj.name || 'Territorio Unificado';
+      const newGroupId = `GRP_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`;
+
+      setMapEntity(prev => ({
+        ...prev,
+        paths: prev.paths.map(p => {
+          if (p.id === sourceId || p.id === targetId) {
+            return {
+              ...p,
+              groupId: newGroupId,
+              groupName: groupName
+            };
+          }
+          return p;
+        }),
+        updatedAt: new Date().toISOString()
+      }));
+
+      setSelectedPathIds([sourceId, targetId]);
+      showNotify(`[📁] Objetos agrupados bajo el contenedor padre "${groupName}".`);
+    }
+    // 3. MODO MISMA IDENTIDAD (Sincroniza nombre, categoría y métricas)
+    else {
+      setMapEntity(prev => ({
+        ...prev,
+        paths: prev.paths.map(p => {
+          if (p.id === sourceId) {
+            return {
+              ...p,
+              name: targetObj.name,
+              category: targetObj.category,
+              customData: {
+                ...(p.customData || {}),
+                layer: targetObj.category,
+                valor: targetObj.customData?.valor,
+                porcentaje: targetObj.customData?.porcentaje,
+                linkedToParentId: targetObj.id
+              }
+            };
+          }
+          return p;
+        }),
+        updatedAt: new Date().toISOString()
+      }));
+
+      setSelectedPathIds([sourceId, targetId]);
+      showNotify(`[🔗] "${sourceObj.name}" ahora comparte la misma identidad que "${targetObj.name}".`);
+    }
+
+    setIsCombineObjectModalOpen(false); // Cierra el modal de combinación de objetos
   };
 
   // Alterna el estado colapsable de las sub-listas del Inspector
@@ -674,28 +1183,53 @@ export default function AdvancedCanvasEditor({
 
   // SINCRONIZAR EL MAPA EN EDICIÓN Y SELECCIÓN DE SUBDIVISIÓN EN MONTAJE O CAMBIO DE REGIÓN
   useEffect(() => {
-    const provKey = selectedProvince?.id || 'country'; // Clave de almacenamiento por región
-    const saved = safeGetItem(`argentina_advanced_canvas_map_${provKey}`); // Carga mapa persistido
+    // Si ya tenemos el mapa cargado con múltiples polígonos y solo cambió selectedSubdivisionId para seleccionar un elemento en el lienzo
+    if (selectedSubdivisionId && mapEntity && Array.isArray(mapEntity.paths) && mapEntity.paths.length > 0) {
+      const matchPath = mapEntity.paths.find(p => 
+        p.id === selectedSubdivisionId || 
+        p.id.toLowerCase() === selectedSubdivisionId.toLowerCase() || 
+        p.id.toLowerCase().replace(/^ar-/, '') === selectedSubdivisionId.toLowerCase().replace(/^ar-/, '') ||
+        (p.name && p.name.toLowerCase() === selectedSubdivisionId.toLowerCase())
+      );
+      if (matchPath) {
+        // Solo actualiza la selección sin recargar ni destruir el lienzo completo de polígonos
+        setSelectedPathIds([matchPath.id]);
+        setEditingPathData({
+          id: matchPath.id,
+          name: matchPath.name,
+          d: matchPath.d,
+          category: matchPath.category || 'subdivision',
+          color: matchPath.customData?.fill || matchPath.visualStyles?.fillColor || '#10b981',
+          value: Number(matchPath.customData?.valor || 35),
+          percentage: Number(matchPath.customData?.porcentaje || 18)
+        });
+        return;
+      }
+    }
+
+    // Clave objetivo precisa (provincia o nivel de mapa contenedor)
+    const targetKey = selectedProvince?.id || 'country';
     let entityToSet: VectorMapEntity; // Variable para almacenar la entidad resultante
 
+    const saved = safeGetItem(`argentina_advanced_canvas_map_${targetKey}`); // Carga mapa persistido específico
     if (saved) { // Si existe en localStorage
       try { // Intenta decodificar
         const parsed = JSON.parse(saved); // Parsea JSON
         if (parsed && Array.isArray(parsed.paths) && parsed.paths.length > 0) { // Si es válido y no está vacío
           entityToSet = parsed; // Usa el mapa guardado
         } else { // Si está vacío
-          entityToSet = getInitialContextualMap(selectedProvince, urlParentId); // Genera mapa contextual
+          entityToSet = getInitialContextualMap(selectedProvince, urlParentId, selectedSubdivisionId, allProvinces); // Genera mapa contextual
         }
       } catch (e) { // En caso de fallo
         console.error("Error al sincronizar mapa guardado:", e); // Registra el error
-        entityToSet = getInitialContextualMap(selectedProvince, urlParentId); // Fallback contextual
+        entityToSet = getInitialContextualMap(selectedProvince, urlParentId, selectedSubdivisionId, allProvinces); // Fallback contextual
       }
     } else { // Si no hay entrada guardada
-      entityToSet = getInitialContextualMap(selectedProvince, urlParentId); // Carga el mapa activo de la región
+      entityToSet = getInitialContextualMap(selectedProvince, urlParentId, selectedSubdivisionId, allProvinces); // Carga el mapa activo de la región o subdivisión
     }
 
-    // Herencia Automática: Si la entidad no posee polígonos, fuerza las provincias nativas con datos completos
-    if (!entityToSet.paths || entityToSet.paths.length === 0) { // Verifica si la lista de polígonos está vacía
+    // Herencia Automática: Si la entidad no posee polígonos y estamos a nivel país global, inyecta las provincias nativas
+    if ((!entityToSet.paths || entityToSet.paths.length === 0) && (!selectedProvince || selectedProvince.id === 'COUNTRY_MAP' || selectedProvince.id === 'country' || selectedProvince.id === 'AR')) {
       entityToSet.paths = provincePaths.map(p => ({ // Inyecta las 24 provincias con metadatos y colores editables
         id: p.id, // ID único
         name: p.name, // Nombre
@@ -716,33 +1250,53 @@ export default function AdvancedCanvasEditor({
       })); // Fin del mapeo de herencia
     } // Fin de condicional de herencia
 
+    // Garantiza que la entidad posea la estructura de transformación matemática
+    entityToSet.transform = {
+      scale: entityToSet.transform?.scale ?? 1,
+      translateX: entityToSet.transform?.translateX ?? 0,
+      translateY: entityToSet.transform?.translateY ?? 0,
+      aspectRatioLocked: entityToSet.transform?.aspectRatioLocked ?? true
+    };
+
     setMapEntity(entityToSet); // Actualiza el estado del mapa en el Súper Editor
 
-    // Sincronización Inteligente de la Selección para MUNDO, Argentina y Provincias
-    if (selectedSubdivisionId && entityToSet.paths.some(p => p.id === selectedSubdivisionId)) { // Si existe una subdivisión seleccionada válida
-      setSelectedPathIds([selectedSubdivisionId]); // Marca la subdivisión activa seleccionada
-    } else if (selectedProvince && (selectedProvince.id === 'COUNTRY_MAP' || selectedProvince.id === 'country' || selectedProvince.id === 'AR')) {
-      // Si la región es Argentina, busca el trazo de Argentina 'AR' o 'country' o la primera provincia
-      const arPath = entityToSet.paths.find(p => p.id === 'AR' || p.id === 'country' || p.id === 'COUNTRY_MAP');
-      if (arPath) {
-        setSelectedPathIds([arPath.id]);
+    // Sincronización Inteligente de la Selección para Subdivisiones, Argentina y Provincias
+    if (selectedSubdivisionId) {
+      const matchPath = entityToSet.paths.find(p => p.id === selectedSubdivisionId || p.id.toLowerCase() === selectedSubdivisionId.toLowerCase() || p.id.toLowerCase().replace(/^ar-/, '') === selectedSubdivisionId.toLowerCase().replace(/^ar-/, ''));
+      if (matchPath) {
+        setSelectedPathIds([matchPath.id]);
         setEditingPathData({
-          id: arPath.id,
-          name: arPath.name || 'Argentina',
-          d: arPath.d,
-          category: arPath.category || 'pais',
-          color: arPath.customData?.fill || arPath.visualStyles?.fillColor || '#10b981',
-          value: Number(arPath.customData?.valor || 45000000),
-          percentage: Number(arPath.customData?.porcentaje || 100)
+          id: matchPath.id,
+          name: matchPath.name,
+          d: matchPath.d,
+          category: matchPath.category || 'subdivision',
+          color: matchPath.customData?.fill || matchPath.visualStyles?.fillColor || '#10b981',
+          value: Number(matchPath.customData?.valor || 35),
+          percentage: Number(matchPath.customData?.porcentaje || 18)
         });
-      } else {
-        setSelectedPathIds([]); // Limpia la lista si no se encuentra la coincidencia
+      } else if (entityToSet.paths.length > 0) {
+        setSelectedPathIds(entityToSet.paths.map(p => p.id));
+        const first = entityToSet.paths[0];
+        setEditingPathData({
+          id: first.id,
+          name: first.name,
+          d: first.d,
+          category: first.category || 'subdivision',
+          color: first.customData?.fill || first.visualStyles?.fillColor || '#10b981',
+          value: Number(first.customData?.valor || 35),
+          percentage: Number(first.customData?.porcentaje || 18)
+        });
       }
+    } else if (selectedProvince && (selectedProvince.id === 'COUNTRY_MAP' || selectedProvince.id === 'country' || selectedProvince.id === 'AR')) {
+      // Si la región es Argentina sin subdivisión, no fuerza selección para ver todas las provincias
+      setSelectedPathIds([]);
     } else if (selectedProvince && (selectedProvince.id === 'WORLD' || selectedProvince.id === 'world' || selectedProvince.id === 'WORLD_MAP' || selectedProvince.id === 'MUNDO' || selectedProvince.id === 'mundo' || (selectedProvince as any).category === 'world' || entityToSet.level === 'mundo')) {
       // Si la región activa es MUNDO / Mapa Mundial, remueve cualquier preselección automática de país
       setSelectedPathIds([]); // Sin selección inicial en el mapa mundial
     } else if (selectedProvince && entityToSet.paths.some(p => p.id === selectedProvince.id)) { // Si el ID de la provincia coincide con un vector activo
       setSelectedPathIds([selectedProvince.id]); // Selecciona el vector de la provincia activa (ej: AR-B)
+    } else if (entityToSet.paths.length === 1) { // Si hay un único polígono cargado
+      setSelectedPathIds([entityToSet.paths[0].id]); // Lo selecciona automáticamente
     } else { // Si no hay selección explícita por subdivisión o región
       setSelectedPathIds([]); // Mantiene limpia la lista de selección para no preseleccionar ningún elemento indeseado
     } // Fin de condicional de selección inteligente
@@ -900,10 +1454,118 @@ export default function AdvancedCanvasEditor({
   // ESTADO DE SELECCIÓN DE PATHS (SELECCIÓN MÚLTIPLE COMPATIBLE)
   const [selectedPathIds, setSelectedPathIds] = useState<string[]>([]); // Lista de IDs seleccionados
   
+  // MODO AISLAR SELECCIÓN (OPCIONAL Y REVERSIBLE - POR DEFECTO FALSE PARA VER TODO EL MAPA)
+  const [isFocusIsolated, setIsFocusIsolated] = useState<boolean>(false); // Alterna entre ver solo selección o todo el mapa
+
+  // ESTADOS DEL HISTORIAL VISUAL ANTIGRAVITY TIMELINE
+  const [isVisualHistoryModalOpen, setIsVisualHistoryModalOpen] = useState<boolean>(false); // Modal de historial visual
+  const [previewHistoryIndex, setPreviewHistoryIndex] = useState<number | null>(null); // Índice del estado en preview temporal
+
   // ESTADOS DE TRANSFORMACIÓN E INTERACCIÓN
-  const [aspectRatioLocked, setAspectRatioLocked] = useState<boolean>(mapEntity.transform.aspectRatioLocked ?? true); // Candado 🔒
+  const [aspectRatioLocked, setAspectRatioLocked] = useState<boolean>(mapEntity?.transform?.aspectRatioLocked ?? true); // Candado 🔒
   const [notification, setNotification] = useState<string | null>(null); // Mensajes emergentes de confirmación
   const [zoomLevel, setZoomLevel] = useState<number>(1); // Nivel de zoom de la vista de trabajo
+  
+  // DETECCIÓN DE CAMBIOS PENDIENTES DE APLICAR (DRAFT VS LIVE)
+  const hasPendingChanges = useMemo(() => {
+    if (!initialMapSnapshotRef.current || !mapEntity) return false;
+    return JSON.stringify(initialMapSnapshotRef.current) !== JSON.stringify(mapEntity);
+  }, [mapEntity]);
+
+  // DUPLICAR TRAZADOS SELECCIONADOS (COPIA RÁPIDA CON OFFSET INSTANTÁNEA)
+  const handleDuplicateSelectedPaths = () => {
+    if (!canEditMap || selectedPathIds.length === 0) return;
+    const offset = 18; // Desplazamiento sutil
+    const duplicatedPaths: VectorPathItem[] = [];
+    const newSelectedIds: string[] = [];
+
+    mapEntity.paths.forEach(p => {
+      if (selectedPathIds.includes(p.id)) {
+        const newId = `${p.id}_copy_${Date.now().toString().slice(-4)}`;
+        const newName = `${p.name} (Copia)`;
+        const newD = translatePathD(p.d, offset, offset);
+        const newPath: VectorPathItem = {
+          ...p,
+          id: newId,
+          name: newName,
+          d: newD,
+          customData: { ...(p.customData || {}), fill: p.customData?.fill || '#38bdf8' },
+          visualStyles: { ...(p.visualStyles || {}), fillColor: p.visualStyles?.fillColor || '#38bdf8' }
+        };
+        duplicatedPaths.push(newPath);
+        newSelectedIds.push(newId);
+      }
+    });
+
+    if (duplicatedPaths.length > 0) {
+      setMapEntity(prev => ({
+        ...prev,
+        paths: [...prev.paths, ...duplicatedPaths],
+        updatedAt: new Date().toISOString()
+      }));
+      setSelectedPathIds(newSelectedIds);
+      showNotify(`[📋] Se duplicaron ${duplicatedPaths.length} trazado(s). Ahora puedes moverlos y editarlos.`);
+    }
+  };
+
+  // FUNCIÓN AUXILIAR PARA DESCARGAR UN ARCHIVO JSON DIRECTAMENTE
+  const downloadJsonBlob = (content: string, filename: string) => {
+    try {
+      const blob = new Blob([content], { type: 'application/json;charset=utf-8;' });
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement('a');
+      link.href = url;
+      link.setAttribute('download', filename);
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+      URL.revokeObjectURL(url);
+    } catch (e) {
+      console.error("Error al descargar JSON:", e);
+    }
+  };
+
+  // GUARDAR / EXPORTAR SELECCIÓN APARTE (COMO NUEVO ARCHIVO JSON/SVG INDEPENDIENTE)
+  const handleSaveSelectionSeparately = () => {
+    if (selectedPaths.length === 0) {
+      showNotify("[⚠️] Selecciona al menos un elemento para guardar aparte.");
+      return;
+    }
+    const defaultName = selectedPaths.length === 1 ? selectedPaths[0].name : `${mapEntity.title || 'Mapa'} - Selección`;
+    let exportName: string | null = null;
+    try {
+      exportName = prompt("Ingresa el nombre para exportar la selección de forma independiente:", defaultName);
+    } catch {
+      exportName = defaultName;
+    }
+    if (!exportName || !exportName.trim()) return;
+
+    const cleanName = exportName.trim();
+    const separateEntity: VectorMapEntity = {
+      id: `map_sel_${Date.now()}`,
+      title: cleanName,
+      level: 'subdivision',
+      parentId: mapEntity.id,
+      ownerId: currentUser.id,
+      isApproved: true,
+      paths: JSON.parse(JSON.stringify(selectedPaths)),
+      transform: { scale: 1, translateX: 0, translateY: 0, aspectRatioLocked: true },
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString()
+    };
+
+    downloadJsonBlob(JSON.stringify(separateEntity, null, 2), `${cleanName.replace(/[\\/:*?"<>|]/g, '_')}.json`);
+    showNotify(`[💾] Selección exportada aparte como "${cleanName}.json".`);
+  };
+
+  // ALTERNAR MODO AISLAMIENTO (FOCUS MODE VOLUNTARIO)
+  const toggleFocusIsolation = () => {
+    setIsFocusIsolated(prev => {
+      const next = !prev;
+      showNotify(next ? "[🔍] Modo Aislamiento activado: solo se visualizan los elementos seleccionados." : "[🗺️] Modo Mapa Completo: todos los trazados visibles.");
+      return next;
+    });
+  };
   
   // ESTADOS DE FORMULARIO DE EDICIÓN DE PATH COMPLETO (COLOR, VALOR, PORCENTAJE, CATEGORÍA Y GEOMETRÍA)
   const [editingPathData, setEditingPathData] = useState<{
@@ -1127,6 +1789,8 @@ export default function AdvancedCanvasEditor({
         setIsDraggingElement(false); // Desactiva movimiento
         setIsResizingElement(null); // Desactiva redimensionado
         setMapEntity(latest => {
+          const saveKey = selectedSubdivisionId || selectedProvince?.id || 'country'; // Clave contextual del territorio
+          safeSetItem(`argentina_advanced_canvas_map_${saveKey}`, JSON.stringify(latest)); // Persiste en clave de territorio
           safeSetItem('argentina_advanced_canvas_map', JSON.stringify(latest)); // Persiste los cambios en almacenamiento local
           return latest;
         });
@@ -1142,7 +1806,7 @@ export default function AdvancedCanvasEditor({
       window.removeEventListener('pointerup', handleGlobalPointerUp);
       window.removeEventListener('pointercancel', handleGlobalPointerUp);
     };
-  }, [isDraggingCanvas, isDraggingElement, isResizingElement, dragStartPos, initialTransformPos, zoomLevel, elementDragStartPos, initialPathsD, initialSelectionBBox, selectedPathIds, aspectRatioLocked, mapEntity.transform]);
+  }, [isDraggingCanvas, isDraggingElement, isResizingElement, dragStartPos, initialTransformPos, zoomLevel, elementDragStartPos, initialPathsD, initialSelectionBBox, selectedPathIds, aspectRatioLocked, mapEntity?.transform, selectedSubdivisionId, selectedProvince?.id]);
 
   // EFECTO DE MIGRACIÓN Y DESPLAZAMIENTO ULTRA-FINO CON TECLAS DE DIRECCIÓN (FLECHAS DEL TECLADO)
   useEffect(() => {
@@ -1172,16 +1836,33 @@ export default function AdvancedCanvasEditor({
   }, [canEditMap, selectedPathIds, nudgeStep]);
 
 
-  // Handler para iniciar el arrastre con la herramienta Manito en el Canva SVG
+  // Handler para iniciar el arrastre en el Canva SVG (Manito o Modo Mover Elementos)
   const handleCanvasPointerDown = (e: React.PointerEvent) => {
-    if (isPanToolActive || e.button === 1 || e.button === 2) { // Si está activa la manito o se presiona rueda/botón derecho
-      setIsDraggingCanvas(true); // Activa el arrastre
+    // 1. Si está activa la herramienta Manito para mover el mapa libremente
+    if (isPanToolActive || e.button === 1 || e.button === 2) {
+      setIsDraggingCanvas(true); // Activa el arrastre de lienzo
       setDragStartPos({ x: e.clientX, y: e.clientY }); // Guarda posición inicial del cursor
       setInitialTransformPos({ // Guarda coordenadas espaciales previas
-        x: mapEntity.transform.translateX,
-        y: mapEntity.transform.translateY
+        x: mapEntity?.transform?.translateX ?? 0,
+        y: mapEntity?.transform?.translateY ?? 0
       });
       e.preventDefault(); // Previene arrastre por defecto
+      return;
+    }
+
+    // 2. Si está activo el MODO MOVER (botón MOVER) y hay elementos seleccionados
+    if (canvasMode === 'move' && canEditMap && selectedPathIds.length > 0) {
+      e.stopPropagation(); // Detiene propagación de eventos
+      const svgPos = getSvgCoordinates(e); // Mapea cursor al espacio SVG
+      setIsDraggingElement(true); // Activa el arrastre de elementos
+      setElementDragStartPos(svgPos); // Guarda punto de partida
+      const initialMap: Record<string, string> = {}; // Diccionario con los 'd' iniciales
+      mapEntity.paths.forEach(item => {
+        if (selectedPathIds.includes(item.id)) {
+          initialMap[item.id] = item.d; // Preserva el trazado original de cada elemento seleccionado
+        }
+      });
+      setInitialPathsD(initialMap); // Guarda en estado para traslación precisa
     }
   };
 
@@ -1686,6 +2367,135 @@ export default function AdvancedCanvasEditor({
     showNotify(`[🎯] Elemento centrado en el lienzo en (X: ${Math.round(canvasCenterX)}, Y: ${Math.round(canvasCenterY)})`);
   };
 
+  // FUNCIÓN PARA REUBICAR Y ALINEAR AUTOMÁTICAMENTE EL OBJETO SELECCIONADO EN EL INDICADOR Y ANIMACIÓN DE UBICACIÓN GEOGRÁFICA
+  // RESUELVE LA POSICIÓN CANÓNICA DE ISLAS MALVINAS Y DE CUALQUIER PROVINCIA/TERRITORIO PARA QUE NO PISE OTRO OBJETO
+  const handleAlignWithGeographicRouteMarker = () => {
+    if (!canEditMap || selectedPathIds.length === 0 || !selectionBBox) {
+      showNotify("[⚠️] Selecciona primero el objeto o territorio que deseas ubicar.");
+      return;
+    }
+
+    // Detecta si es Malvinas o si la provincia activa es Malvinas
+    const targetKey = (selectedSubdivisionId || selectedProvince?.id || '').toLowerCase();
+    const isMalvinas = targetKey.includes('malvin') || targetKey.includes('mlv') || 
+                       selectedPaths.some(p => p.id.toLowerCase().includes('malvin') || p.id.toLowerCase().includes('mlv') || (p.name || '').toLowerCase().includes('malvin'));
+
+    let targetBBox: { x: number; y: number; width: number; height: number };
+
+    if (isMalvinas) {
+      // Coordenadas canónicas exactas de la ubicación de Islas Malvinas y su indicador/animación en el mapa de Argentina
+      targetBBox = { x: 440, y: 710, width: 85, height: 60 };
+    } else {
+      // Busca en la base de trazados de referencia provinciales de Argentina
+      const provMatch = provincePaths.find(p => p.id === (selectedSubdivisionId || selectedProvince?.id) || p.id.toLowerCase() === targetKey.replace(/^ar-/, ''));
+      if (provMatch && provMatch.d) {
+        targetBBox = getPathBBox(provMatch.d);
+      } else {
+        // Fallback: Centroide del mapa general
+        const mapBBox = mapEntity.paths.length > 0
+          ? getMultiplePathsBBox(mapEntity.paths.map(p => ({ d: p.d })))
+          : { x: 0, y: 0, width: 800, height: 600 };
+        targetBBox = mapBBox;
+      }
+    }
+
+    if (!targetBBox) return;
+
+    const targetCenterX = targetBBox.x + targetBBox.width / 2;
+    const targetCenterY = targetBBox.y + targetBBox.height / 2;
+
+    const currentCenterX = selectionBBox.x + selectionBBox.width / 2;
+    const currentCenterY = selectionBBox.y + selectionBBox.height / 2;
+
+    const deltaX = targetCenterX - currentCenterX;
+    const deltaY = targetCenterY - currentCenterY;
+
+    // Traslada todos los trazados seleccionados exactamente hacia el indicador geográfico
+    setMapEntity(prev => {
+      const updatedEntity = {
+        ...prev,
+        paths: prev.paths.map(p => {
+          if (selectedPathIds.includes(p.id)) {
+            return {
+              ...p,
+              d: translatePathD(p.d, deltaX, deltaY)
+            };
+          }
+          return p;
+        }),
+        updatedAt: new Date().toISOString()
+      };
+      const saveKey = selectedSubdivisionId || selectedProvince?.id || 'country';
+      safeSetItem(`argentina_advanced_canvas_map_${saveKey}`, JSON.stringify(updatedEntity));
+      safeSetItem('argentina_advanced_canvas_map', JSON.stringify(updatedEntity));
+      return updatedEntity;
+    });
+
+    showNotify(`[📍] Objeto ubicado exactamente en la posición del indicador de ruta y animación de ubicación geográfica.`);
+  };
+
+  // FUNCIÓN PARA ALTERNAR EL MODO EXCLUSIVO DE MOVER
+  const toggleMoveMode = () => {
+    if (canvasMode === 'move') {
+      setCanvasMode('select');
+      showNotify("[ℹ️] Modo de Selección Normal activado.");
+    } else {
+      setCanvasMode('move');
+      setIsPanToolActive(false); // Desactiva manito para evitar conflictos
+      if (selectedPathIds.length === 0 && mapEntity.paths.length > 0) {
+        // Si no había selección, selecciona todos los elementos para mover en bloque
+        setSelectedPathIds(mapEntity.paths.map(p => p.id));
+      }
+      showNotify("[✥] MODO MOVER ACTIVADO: Haz clic y arrastra directamente en el lienzo para mover y reubicar sin conflictos.");
+    }
+  };
+
+  // FUNCIÓN PARA ALTERNAR EL MODO EXCLUSIVO DE REDIMENSIONAR
+  const toggleResizeMode = () => {
+    if (canvasMode === 'resize') {
+      setCanvasMode('select');
+      showNotify("[ℹ️] Modo de Selección Normal activado.");
+    } else {
+      setCanvasMode('resize');
+      setIsPanToolActive(false); // Desactiva manito para evitar conflictos
+      if (selectedPathIds.length === 0 && mapEntity.paths.length > 0) {
+        // Si no había selección, selecciona todos los elementos
+        setSelectedPathIds(mapEntity.paths.map(p => p.id));
+      }
+      showNotify("[⤢] MODO REDIMENSIONAR ACTIVADO: Usa los tiradores ampliados o los botones rápidos de escala para ajustar el tamaño.");
+    }
+  };
+
+  // FUNCIÓN PARA ESCALAR RÁPIDAMENTE LA SELECCIÓN EN UN PORCENTAJE DADO (+10%, -10%, etc.)
+  const handleQuickScaleSelection = (factor: number) => {
+    if (!canEditMap || selectedPathIds.length === 0 || !selectionBBox) return;
+    const anchorX = selectionBBox.x + selectionBBox.width / 2; // Anclaje en el centro X
+    const anchorY = selectionBBox.y + selectionBBox.height / 2; // Anclaje en el centro Y
+
+    setMapEntity(prev => {
+      const updatedEntity = {
+        ...prev,
+        paths: prev.paths.map(p => {
+          if (selectedPathIds.includes(p.id)) {
+            return {
+              ...p,
+              d: scalePathD(p.d, factor, factor, anchorX, anchorY)
+            };
+          }
+          return p;
+        }),
+        updatedAt: new Date().toISOString()
+      };
+      const saveKey = selectedSubdivisionId || selectedProvince?.id || 'country';
+      safeSetItem(`argentina_advanced_canvas_map_${saveKey}`, JSON.stringify(updatedEntity));
+      safeSetItem('argentina_advanced_canvas_map', JSON.stringify(updatedEntity));
+      return updatedEntity;
+    });
+
+    const percentText = factor > 1 ? `+${Math.round((factor - 1) * 100)}%` : `-${Math.round((1 - factor) * 100)}%`;
+    showNotify(`[⤢] Tamaño ajustado: ${percentText}`);
+  };
+
   // FUNCIÓN PARA APLICAR GROSOR DE LÍNEA Y TIPO DE BORDE A TODOS LOS TRAZOS DEL MAPA
   const handleApplyGlobalStrokeToAllPaths = (strokeW: number, strokeColorVal?: string) => {
     if (!canEditMap) return;
@@ -2157,6 +2967,130 @@ export default function AdvancedCanvasEditor({
   };
 
   // =========================================================================
+  // ESTADO Y LÓGICA PARA AGREGAR NUEVOS ELEMENTOS / TERRITORIOS / MIEMBROS
+  // (INTEGRACIÓN ADITIVA PURA: NO REEMPLAZA NI BORRA NADA DE LO EXISTENTE)
+  // =========================================================================
+  const [isAddElementModalOpen, setIsAddElementModalOpen] = useState<boolean>(false); // Modal para agregar nuevo elemento
+
+  // FUNCIÓN PARA AGREGAR UN NUEVO ELEMENTO VECTORIAL AL MAPA ACTUAL SIN REEMPLAZAR NADA
+  const handleAddNewVectorPath = (
+    newPath: VectorPathItem,
+    options?: { autoSelect?: boolean; focus?: boolean }
+  ) => {
+    if (!canEditMap || !newPath) return; // Validación de permisos y elemento
+
+    // 1. Genera un ID único asegurando que no colisione con los elementos existentes
+    let finalId = newPath.id ? newPath.id.trim() : `ITEM_${Date.now()}`;
+    const idAlreadyExists = mapEntity.paths.some(p => p.id === finalId);
+    if (idAlreadyExists) {
+      finalId = `${finalId}_${Date.now().toString().slice(-4)}`;
+    }
+
+    // 2. Prepara el objeto VectorPathItem completo con estilos y metadatos limpios
+    const finalItem: VectorPathItem = {
+      ...newPath,
+      id: finalId,
+      name: newPath.name || 'Nuevo Elemento',
+      d: newPath.d,
+      category: newPath.category || selectedProvince?.name || 'provincia',
+      ownerId: currentUser.id,
+      fill: newPath.fill || '#10b981',
+      stroke: newPath.stroke || '#0f172a',
+      strokeWidth: newPath.strokeWidth ?? 1.0,
+      visualStyles: {
+        fillColor: newPath.visualStyles?.fillColor || newPath.fill || '#10b981',
+        strokeColor: newPath.visualStyles?.strokeColor || newPath.stroke || '#0f172a',
+        strokeWidth: newPath.visualStyles?.strokeWidth ?? newPath.strokeWidth ?? 1.0
+      },
+      customData: {
+        ...(newPath.customData || {}),
+        fill: newPath.visualStyles?.fillColor || newPath.fill || '#10b981',
+        stroke: newPath.visualStyles?.strokeColor || newPath.stroke || '#0f172a',
+        strokeWidth: newPath.visualStyles?.strokeWidth ?? newPath.strokeWidth ?? 1.0,
+        agregadoEn: new Date().toISOString()
+      }
+    };
+
+    // 3. Agrega el nuevo elemento al final de paths sin alterar ninguno de los elementos existentes
+    setMapEntity(prev => {
+      const updatedPaths = [...prev.paths, finalItem];
+      const updatedEntity: VectorMapEntity = {
+        ...prev,
+        paths: updatedPaths,
+        updatedAt: new Date().toISOString()
+      };
+
+      // Guarda en el almacenamiento local seguro
+      const targetKey = selectedSubdivisionId || selectedProvince?.id || 'country';
+      safeSetItem(`argentina_advanced_canvas_map_${targetKey}`, JSON.stringify(updatedEntity));
+      safeSetItem('argentina_advanced_canvas_map', JSON.stringify(updatedEntity));
+
+      return updatedEntity;
+    });
+
+    // 4. Si autoSelect es true, selecciona inmediatamente el nuevo elemento y activa el modo mover/inspector
+    if (options?.autoSelect !== false) {
+      setSelectedPathIds([finalItem.id]);
+      setCanvasMode('move'); // Facilita el arrastre para ubicarlo donde corresponde
+      setShowRightSidebar(true); // Abre el inspector para permitir redimensionar y posicionar
+    }
+
+    // 5. Cierra el modal de agregar y notifica al usuario con feedback claro
+    setIsAddElementModalOpen(false);
+    showNotify(`[➕] ¡Elemento "${finalItem.name}" agregado con éxito! Puedes moverlo, redimensionarlo y ubicarlo en el mapa.`);
+  };
+
+  // RESTAURACIÓN INSTANTÁNEA EN 1 CLIC PARA ISLAS MALVINAS CON COORDENADAS OFICIALES
+  const handleQuickRestoreMalvinas = () => {
+    if (!canEditMap) return;
+    const malvinasPreset = provincePaths.find(p => p.id === 'AR-MLV');
+    if (!malvinasPreset) {
+      showNotify("[⚠️] No se encontraron las coordenadas oficiales de Islas Malvinas.");
+      return;
+    }
+
+    // 1. Restaura en el almacenamiento global y calibrado de Argentina
+    restoreMalvinasToOriginal();
+
+    // 2. Inserta la pieza en el canvas actual
+    const malvinasItem: VectorPathItem = {
+      id: 'AR-MLV',
+      name: 'Islas Malvinas',
+      d: malvinasPreset.d,
+      category: 'provincia',
+      fill: '#10b981',
+      stroke: '#0f172a',
+      strokeWidth: 1.0,
+      visualStyles: {
+        fillColor: '#10b981',
+        strokeColor: '#0f172a',
+        strokeWidth: 1.0
+      },
+      customData: {
+        fill: '#10b981',
+        stroke: '#0f172a',
+        strokeWidth: 1.0,
+        valor: 100,
+        porcentaje: 100,
+        territorioOficial: true
+      }
+    };
+
+    handleAddNewVectorPath(malvinasItem, { autoSelect: true, focus: true });
+    showNotify("🛡️ Islas Malvinas restauradas en su ubicación y trazado original independiente.");
+  };
+
+  // Detecta si las Islas Malvinas están ausentes en el mapa actual
+  const isMalvinasMissing = useMemo(() => {
+    if (!mapEntity || !Array.isArray(mapEntity.paths)) return false;
+    return !mapEntity.paths.some(p => 
+      p.id === 'AR-MLV' || 
+      p.id.toLowerCase().includes('malvina') || 
+      p.name.toLowerCase().includes('malvina')
+    );
+  }, [mapEntity.paths]);
+
+  // =========================================================================
   // SISTEMA DE AGRUPAMIENTO, COMBINACIÓN Y SEPARACIÓN VECTORIAL DE ALTA PRECISIÓN
   // (AGRUPAR / DESAGRUPAR / COMBINAR / DESCOMBINAR / SEPARAR SIN PERDER DATOS)
   // =========================================================================
@@ -2172,14 +3106,8 @@ export default function AdvancedCanvasEditor({
     // Solicita o define el nombre del elemento PADRE con fallback automático usando el territorio o división activa
     let groupName = customGroupName; // Variable para almacenar el nombre del grupo padre
     if (!groupName) { // Si no se especificó un nombre personalizado previo
-      const parentName = selectedProvince?.name || mapEntity.title || mapEntity.name || 'ISLAS MALVINAS'; // Nombre de la división o porción principal
-      const defaultName = parentName; // Asigna el elemento padre por defecto
-      try {
-        const prompted = prompt("Ingresa el nombre para el elemento PADRE que agrupa a todos los objetos hijos:", defaultName); // Pide confirmación de nombre padre
-        groupName = (prompted && prompted.trim()) ? prompted.trim() : defaultName; // Si cancela o vacía, usa el nombre del padre
-      } catch (err) { // Captura bloqueo de prompt en iframes
-        groupName = defaultName; // Asigna nombre por defecto del elemento padre
-      }
+      const parentName = selectedProvince?.name || mapEntity.title || mapEntity.name || 'GRUPO VECTORIAL'; // Nombre de la división o porción principal
+      groupName = parentName; // Asigna el elemento padre por defecto sin bloquear el iframe
     }
 
     const cleanGroupName = groupName.trim(); // Sanitiza la cadena ingresada
@@ -2463,6 +3391,35 @@ export default function AdvancedCanvasEditor({
     showNotify(`[📤] Se extrajo "${extractedItem.name}" del combinado como trazado independiente.`);
   };
 
+  // INICIAR MODO DE ASOCIACIÓN DIRECTA POR CLIC EN EL MAPA (SIN MODALES)
+  const handleStartDirectAssociateToMap = (pathId?: string) => {
+    const targetPathId = pathId || (selectedPathIds.length > 0 ? selectedPathIds[0] : null);
+    if (!targetPathId) {
+      alert("Por favor selecciona un trazado u objeto en el editor para asociar al mapa.");
+      return;
+    }
+
+    const p = mapEntity.paths.find(item => item.id === targetPathId);
+    if (!p) {
+      alert("No se encontró el objeto seleccionado.");
+      return;
+    }
+
+    const detail = {
+      pathId: p.id,
+      name: p.name || p.id,
+      d: p.d,
+      fill: p.customData?.fill || p.visualStyles?.fillColor || '#10b981',
+      customData: p.customData || {}
+    };
+
+    sessionStorage.setItem('argentina_direct_associate_source', JSON.stringify(detail));
+    window.dispatchEvent(new CustomEvent('start_direct_associate_map', { detail }));
+
+    setIsCombineObjectModalOpen(false);
+    showNotify(`[🎯] ¡Modo Asociar al Clic Activo! Haz clic en el país/provincia en el mapa (ej: Argentina) para unir "${p.name}".`);
+  };
+
   // EXTRAER PATH (CORTAR/AISLAR POLÍGONO EN UN NUEVO MAPA INDEPENDIENTE)
   const handleExtractPath = () => {
     if (!canEditMap) return;
@@ -2701,7 +3658,21 @@ export default function AdvancedCanvasEditor({
     }
 
     // Fusión exterior de trazados (Dissolve Outer Boundary)
-    const unifiedD = dArray.join(' ');
+    let unifiedD = dArray.join(' ');
+
+    // Si la silueta viene de un archivo importado o pegado con coordenadas desacopladas (ej: origen 0,0) y el nodo objetivo tiene posición geográfica real:
+    const targetNode = mapEntity.paths.find(p => p.id === targetId);
+    if (targetNode && targetNode.d) {
+      const origBBox = getPathBBox(targetNode.d);
+      const incomingBBox = getPathBBox(unifiedD);
+      if (origBBox && origBBox.width > 1 && origBBox.height > 1 && incomingBBox) {
+        // Si el SVG importado está en coordenadas aisladas (lejos de la posición original)
+        if (Math.abs(incomingBBox.x - origBBox.x) > 200 && incomingBBox.x < 150 && incomingBBox.y < 150) {
+          unifiedD = fitPathToBBox(unifiedD, origBBox);
+        }
+      }
+    }
+
     setPreviewSilhouette(unifiedD);
     showNotify(`[✨] Vista previa de la silueta perfeccionada generada sobre el lienzo (resaltado rosa/rojo).`);
   };
@@ -2739,48 +3710,68 @@ export default function AdvancedCanvasEditor({
     if (e.target) e.target.value = '';
   };
 
-  // BOTÓN "APLICAR CAMBIOS" (MUTACIÓN QUIRÚRGICA SEGURA DE ESTADO GLOBAL):
-  const handleApplySilhouetteMutation = () => { // Aplica la silueta modificada quirúrgicamente
-    const targetId = selectedPathIds[0] || (editingPathData ? editingPathData.id : null); // ID objetivo
-    if (!targetId) { // Si no hay nodo activo
-      alert("No hay ningún nodo seleccionado para aplicar los cambios."); // Muestra alerta
-      return; // Cancela la operación
-    }
-    if (!previewSilhouette) { // Si no hay vista previa generada
-      alert("Primero genera una vista previa de la silueta perfeccionada antes de aplicar cambios."); // Muestra aviso
-      return; // Cancela la operación
-    }
+  // EJECUCIÓN DIRECTA CONFIRMADA DE LA MUTACIÓN QUIRÚRGICA:
+  const executeDirectSilhouetteMutation = (targetId: string, newD: string) => {
+    const updatedPaths = (mapEntity.paths || []).map(node =>
+      node.id === targetId ? { ...node, d: newD } : node
+    );
 
-    // CÓDIGO EXIGIDO PARA LA MUTACIÓN SEGURA DE ESTADO GLOBAL:
-    const updatedPaths = (mapEntity.paths || []).map(node => // Recorre los nodos vectoriales
-      node.id === targetId ? { ...node, d: previewSilhouette } : node // Sustituye la geometría 'd' exclusivamente en el objetivo
-    ); // Fin de mapa de actualización
-
-    const updatedEntity: VectorMapEntity = { // Construye la entidad de mapa actualizada
-      ...mapEntity, // Mantiene metadatos previos
-      paths: updatedPaths, // Inyecta los trazados actualizados
-      updatedAt: new Date().toISOString() // Actualiza marca de tiempo
+    const updatedEntity: VectorMapEntity = {
+      ...mapEntity,
+      paths: updatedPaths,
+      updatedAt: new Date().toISOString()
     };
 
-    setMapEntity(updatedEntity); // Aplica el nuevo estado en React
+    setMapEntity(updatedEntity);
+    setEditingPathData(prev => prev ? { ...prev, d: newD } : prev);
+    setPreviewSilhouette(null);
 
-    // Actualiza los datos del inspector en el componente
-    setEditingPathData(prev => prev ? { ...prev, d: previewSilhouette } : prev); // Sincroniza el formulario del inspector
+    safeSetItem('argentina_advanced_canvas_map', JSON.stringify(updatedEntity));
+    const provKey = selectedProvince?.id || mapEntity.id || 'country';
+    safeSetItem(`argentina_advanced_canvas_map_${provKey}`, JSON.stringify(updatedEntity));
 
-    // Limpia la vista previa de la silueta
-    setPreviewSilhouette(null); // Desactiva el overlay de vista previa
-
-    // Sincroniza y persiste inmediatamente los cambios con la aplicación global
-    safeSetItem('argentina_advanced_canvas_map', JSON.stringify(updatedEntity)); // Guarda en almacenamiento global
-    const provKey = selectedProvince?.id || mapEntity.id || 'country'; // Clave de región activa
-    safeSetItem(`argentina_advanced_canvas_map_${provKey}`, JSON.stringify(updatedEntity)); // Guarda clave por región
-
-    if (onSaveMapEntity) { // Si existe el callback externo de guardado
-      onSaveMapEntity(updatedEntity); // Notifica el cambio de entidad
+    if (onSaveMapEntity) {
+      onSaveMapEntity(updatedEntity);
     }
 
-    showNotify(`[🎯] Silueta de "${targetId}" actualizada quirúrgicamente. Sus datos y los demás nodos permanecen intactos.`); // Notificación exitosa
-    alert(`¡Inyección Quirúrgica Exitosa!\n\nSe ha actualizado EXCLUSIVAMENTE la silueta (propiedad 'd') del nodo seleccionado "${targetId}".\n\n- Todos los demás nodos del mapa global: conservados 100% intactos.\n- Datos estadísticos, metadatos y nombre de "${targetId}": preservados intactos.`); // Confirmación al usuario
+    showNotify(`[🎯] Silueta de "${targetId}" actualizada quirúrgicamente.`);
+  };
+
+  // BOTÓN "APLICAR CAMBIOS" (CON ADVERTENCIA VISUAL PREVIA Y BLINDAJE DE SEGURIDAD):
+  const handleApplySilhouetteMutation = () => { // Aplica la silueta modificada con confirmación visual
+    const targetId = selectedPathIds[0] || (editingPathData ? editingPathData.id : null);
+    if (!targetId) {
+      alert("No hay ningún nodo seleccionado para aplicar los cambios.");
+      return;
+    }
+    if (!previewSilhouette) {
+      alert("Primero genera una vista previa de la silueta antes de aplicar cambios.");
+      return;
+    }
+
+    const targetNode = mapEntity.paths.find(p => p.id === targetId);
+    const targetName = targetNode?.name || targetId;
+    const targetCurrentD = targetNode?.d || '';
+
+    // Abre el modal de seguridad mostrando la imagen antes vs después
+    setSafetyModalConfig({
+      isOpen: true, // Abre el modal
+      targetId: targetId, // ID del territorio seleccionado
+      targetName: targetName, // Nombre del territorio seleccionado
+      targetCurrentD: targetCurrentD, // D de la silueta actual
+      targetPaths: targetNode ? [targetNode] : undefined, // Objeto vectorial previo con sus colores
+      proposedD: previewSilhouette, // D de la silueta propuesta
+      proposedName: `Silueta Perfeccionada de ${targetName}`, // Nombre descriptivo
+      proposedPaths: mapEntity.paths.map(p => p.id === targetId ? { ...p, d: previewSilhouette } : p), // Conjunto de paths con la modificación
+      operationType: 'silhouette_mutation', // Tipo de operación
+      onConfirmReplace: () => {
+        executeDirectSilhouetteMutation(targetId, previewSilhouette);
+      },
+      onConfirmAsIndependent: isPathMatchingMalvinas(previewSilhouette) ? () => {
+        restoreMalvinasToOriginal();
+        showNotify("✅ Islas Malvinas incorporadas en su posición original independiente. Tierra del Fuego permanece 100% intacta.");
+      } : undefined
+    });
   }; // Fin de handleApplySilhouetteMutation
 
   // DESCARTAR VISTA PREVIA
@@ -2789,85 +3780,138 @@ export default function AdvancedCanvasEditor({
     showNotify("[ℹ️] Vista previa de silueta descartada."); // Notificación informativa
   }; // Fin de handleCancelSilhouettePreview
 
-  // GUARDAR MAPA EN LA APLICACIÓN / PERSISTENCIA EN TIEMPO REAL MULTI-CLAVE CON IMPACTO DIRECTO EN MAPA MACRO NACIONAL
-  const handleSaveMapToApp = () => { // Función principal para aplicar cambios y sincronizar con la aplicación
-    if (!canEditMap) return; // Verifica permisos de edición RBAC del usuario
+  // EJECUCIÓN DIRECTA DEL GUARDADO DE MAPA TRAS CONFIRMACIÓN
+  const executeDirectSaveMapToApp = () => {
+    const activeTargetId = selectedSubdivisionId || selectedProvince?.id || mapEntity.paths[0]?.id || mapEntity.id || 'country';
+    const activeTargetName = selectedProvince?.name || mapEntity.paths[0]?.name || mapEntity.title || activeTargetId;
+    const targetNormalized = activeTargetId.toLowerCase().replace(/^ar-/, '');
+    const isMalvinas = activeTargetId.toLowerCase().includes('malvin') || activeTargetId.toLowerCase().includes('mlv') || activeTargetName.toLowerCase().includes('malvin');
 
-    const provKey = selectedProvince?.id || mapEntity.id || 'country'; // Obtiene la clave o ID de la región activa
-    const serializedEntity = JSON.stringify(mapEntity); // Serializa el objeto de mapa vectorial completo a formato JSON
+    const serializedEntity = JSON.stringify(mapEntity);
 
-    // 1. PERSISTENCIA ASEGURADA EN MÚLTIPLES ENTRADAS DE LOCALSTORAGE
-    safeSetItem('argentina_advanced_canvas_map', serializedEntity); // Guarda la entrada por defecto
-    safeSetItem(`argentina_advanced_canvas_map_${provKey}`, serializedEntity); // Guarda bajo la clave propia de la región activa
-    if (provKey.toUpperCase() === 'WORLD_MAP' || mapEntity.level === 'world' || mapEntity.id === 'WORLD_MAP') { // Si es el mapa del mundo
-      safeSetItem('argentina_advanced_canvas_map_WORLD_MAP', serializedEntity); // Guarda en la clave específica de mapa mundial
+    safeSetItem('argentina_advanced_canvas_map', serializedEntity);
+    safeSetItem(`argentina_advanced_canvas_map_${activeTargetId}`, serializedEntity);
+    if (selectedProvince?.id && selectedProvince.id !== activeTargetId) {
+      safeSetItem(`argentina_advanced_canvas_map_${selectedProvince.id}`, serializedEntity);
+    }
+    if (activeTargetId.toUpperCase() === 'WORLD_MAP' || mapEntity.level === 'world' || mapEntity.id === 'WORLD_MAP') {
+      safeSetItem('argentina_advanced_canvas_map_WORLD_MAP', serializedEntity);
     }
 
-    if (onSaveMapEntity) { // Notifica al callback externo si fue proporcionado
-      onSaveMapEntity(mapEntity); // Sincroniza la entidad de mapa
+    if (onSaveMapEntity) {
+      onSaveMapEntity(mapEntity);
     }
 
-    // 2. ACTUALIZACIÓN DE LA PROVINCIA ACTIVA Y DE SUS MUNICIPIOS DETALLADOS
-    const activeTargetId = selectedSubdivisionId || selectedProvince?.id || mapEntity.id; // Identifica la región o subdivisión activa
-    const targetNormalized = activeTargetId ? activeTargetId.toLowerCase().replace(/^ar-/, '') : ''; // Normaliza el código
-
-    // Unifica todos los trazos de SÚPER EDITOR en una silueta única limpia para el contorno macro
     const rawUnifiedD = mapEntity.paths.map(p => (p.d || '').trim()).filter(Boolean).join(' ');
 
-    // Busca la geometría nativa de referencia en provincePaths si oldMacroSub.d está vacía
-    const refPathObj = provincePaths.find(p => p.id === activeTargetId || p.id.toLowerCase() === activeTargetId.toLowerCase() || p.id.toLowerCase().replace(/^ar-/, '') === targetNormalized || p.name.toLowerCase().includes((mapEntity.title || '').toLowerCase()));
-
     let countryMap: ProvinceData | undefined = undefined;
-    let matchedIndex = -1;
-
     if (allProvinces) {
       countryMap = allProvinces['COUNTRY_MAP'] || allProvinces['argentina'] || allProvinces['country'];
-      if (countryMap && Array.isArray(countryMap.municipalities)) {
-        matchedIndex = countryMap.municipalities.findIndex(m => {
-          const mId = m.id.toLowerCase().replace(/^ar-/, '');
-          const mName = (m.name || '').toLowerCase();
-          const activeName = (selectedProvince?.name || mapEntity.title || '').toLowerCase();
+    }
 
-          return (
-            (targetNormalized && (mId === targetNormalized || m.id.toLowerCase() === activeTargetId.toLowerCase())) ||
-            (mName && activeName && (mName === activeName || mName.includes(activeName) || activeName.includes(mName)))
-          );
-        });
+    const refPathObj = provincePaths.find(p => {
+      const pId = p.id.toLowerCase().replace(/^ar-/, '');
+      const pName = p.name.toLowerCase();
+      const tName = activeTargetName.toLowerCase();
+      return (
+        p.id === activeTargetId ||
+        p.id.toLowerCase() === activeTargetId.toLowerCase() ||
+        pId === targetNormalized ||
+        pName === tName ||
+        pName.includes(tName) ||
+        tName.includes(pName) ||
+        (isMalvinas && (pName.includes('malvin') || p.id === 'AR-MLV'))
+      );
+    });
+
+    let matchedIndex = -1;
+    let oldMacroSub: any = undefined;
+
+    if (countryMap && Array.isArray(countryMap.municipalities)) {
+      matchedIndex = countryMap.municipalities.findIndex(m => {
+        const mId = m.id.toLowerCase().replace(/^ar-/, '');
+        const mName = (m.name || '').toLowerCase();
+        const tName = activeTargetName.toLowerCase();
+        return (
+          m.id === activeTargetId ||
+          m.id.toLowerCase() === activeTargetId.toLowerCase() ||
+          mId === targetNormalized ||
+          mName === tName ||
+          mName.includes(tName) ||
+          tName.includes(mName) ||
+          (isMalvinas && (mName.includes('malvin') || m.id === 'AR-MLV' || m.id === 'MALVINAS'))
+        );
+      });
+      if (matchedIndex !== -1) {
+        oldMacroSub = countryMap.municipalities[matchedIndex];
       }
     }
 
-    // Determina la geometría de referencia para calcular el Bounding Box original
-    const oldMacroSub = matchedIndex !== -1 && countryMap ? countryMap.municipalities[matchedIndex] : undefined;
     const origRefD = oldMacroSub?.d || refPathObj?.d || '';
     const targetBBox = getPathBBox(origRefD);
 
     let finalFittedD = rawUnifiedD;
-    if (targetBBox && targetBBox.width > 1 && targetBBox.height > 1 && rawUnifiedD) {
-      finalFittedD = fitPathToBBox(rawUnifiedD, targetBBox); // Ajusta exactamente al tamaño y posición original
+    const currentBBox = getPathBBox(rawUnifiedD);
+    if (targetBBox && targetBBox.width > 1 && targetBBox.height > 1 && currentBBox) {
+      if (Math.abs(currentBBox.x - targetBBox.x) > 300 && currentBBox.x < 100 && currentBBox.y < 100) {
+        finalFittedD = fitPathToBBox(rawUnifiedD, targetBBox);
+      }
     }
 
-    if (selectedProvince && onUpdateProvince) { // Si existe la provincia activa y la función de actualización
-      const updatedMunicipalities = mapEntity.paths.map(p => ({ // Mapea todos los trazados vectoriales del canvas
-        id: p.id, // Conserva el ID único del trazado
-        name: p.name, // Conserva o asigna el nombre del trazado
-        value: p.customData?.valor || p.customData?.value || 0, // Mantiene el valor estadístico
-        percentage: p.customData?.porcentaje || p.customData?.percentage || 0, // Mantiene el porcentaje
-        d: p.d, // Conserva la geometría vectorial 'd'
-        color: p.customData?.fill || p.visualStyles?.fillColor || p.fill || '#10b981', // Color de relleno
-        layer: p.category || p.customData?.layer || selectedProvince.name, // Capa
-        visualStyles: { // Estilos visuales
+    const rawCalibrated = safeGetItem('argentina_calibrated_map_paths');
+    let currentCalibrated: { id: string; d: string }[] = [];
+    if (rawCalibrated) {
+      try { currentCalibrated = JSON.parse(rawCalibrated); } catch (e) {}
+    }
+    if (!Array.isArray(currentCalibrated) || currentCalibrated.length === 0) {
+      currentCalibrated = provincePaths.map(p => ({ id: p.id, d: p.d }));
+    }
+
+    const idsToUpdate = [
+      activeTargetId,
+      oldMacroSub?.id,
+      refPathObj?.id,
+      ...(isMalvinas ? ['AR-MLV', 'MALVINAS'] : [])
+    ].filter(Boolean) as string[];
+
+    idsToUpdate.forEach(targetIdToSync => {
+      const calIndex = currentCalibrated.findIndex(p => 
+        p.id === targetIdToSync || 
+        p.id.toLowerCase() === targetIdToSync.toLowerCase() || 
+        p.id.toLowerCase().replace(/^ar-/, '') === targetIdToSync.toLowerCase().replace(/^ar-/, '')
+      );
+      if (calIndex !== -1) {
+        currentCalibrated[calIndex].d = finalFittedD;
+      } else {
+        currentCalibrated.push({ id: targetIdToSync, d: finalFittedD });
+      }
+    });
+
+    safeSetItem('argentina_calibrated_map_paths', JSON.stringify(currentCalibrated));
+    safeSetItem('argentina_paths_last_updated', Date.now().toString());
+
+    if (selectedProvince && onUpdateProvince) {
+      const updatedMunicipalities = mapEntity.paths.map(p => ({
+        id: p.id,
+        name: p.name,
+        value: p.customData?.valor || p.customData?.value || 0,
+        percentage: p.customData?.porcentaje || p.customData?.percentage || 0,
+        d: p.d,
+        color: p.customData?.fill || p.visualStyles?.fillColor || p.fill || '#10b981',
+        layer: p.category || p.customData?.layer || selectedProvince.name,
+        visualStyles: {
           fillColor: p.customData?.fill || p.visualStyles?.fillColor || p.fill || '#10b981',
           strokeColor: p.customData?.stroke || p.visualStyles?.strokeColor || p.stroke || '#0f172a',
           strokeWidth: p.customData?.strokeWidth || p.visualStyles?.strokeWidth || p.strokeWidth || 1.5
         },
-        customData: p.customData || {} // Preserva metadatos
+        customData: p.customData || {}
       }));
 
-      onUpdateProvince({ // Actualiza los datos de la provincia activa
-        ...selectedProvince, // Preserva los datos principales
-        d: finalFittedD || selectedProvince.d, // Asigna la nueva silueta ajustada
-        municipalities: updatedMunicipalities, // Asigna los municipios o subdivisiones detalladas
-        mapTransform: { // Preserva transformaciones de vista
+      onUpdateProvince({
+        ...selectedProvince,
+        d: finalFittedD || selectedProvince.d,
+        municipalities: updatedMunicipalities,
+        mapTransform: {
           scale: mapEntity.transform.scale,
           panX: mapEntity.transform.translateX,
           panY: mapEntity.transform.translateY
@@ -2875,42 +3919,24 @@ export default function AdvancedCanvasEditor({
       });
     }
 
-    // 3. PROPAGACIÓN E IMPACTO DIRECTO AL MAPA MACRO NACIONAL ("COUNTRY_MAP" / ARGENTINA)
-    if (onUpdateProvince && countryMap && matchedIndex !== -1 && oldMacroSub) {
-      const updatedCountryMunicipalities = [...countryMap.municipalities]; // Copia el arreglo de provincias
-      const targetIdToSync = oldMacroSub.id || activeTargetId;
-
-      updatedCountryMunicipalities[matchedIndex] = {
-        ...oldMacroSub, // Mantiene metadatos existentes
-        d: finalFittedD || oldMacroSub.d, // Asigna la nueva geometría auto-escalada respetando la medida
-        customData: {
-          ...(oldMacroSub.customData || {}),
-          subItems: mapEntity.paths // Almacena las capas/polígonos vectoriales para inspección
-        }
-      };
+    // 7. Propagación e impacto directo al mapa macro nacional ("COUNTRY_MAP" / ARGENTINA)
+    if (onUpdateProvince && countryMap) {
+      const updatedCountryMunicipalities = countryMap.municipalities ? [...countryMap.municipalities] : [];
+      if (matchedIndex !== -1 && oldMacroSub) {
+        updatedCountryMunicipalities[matchedIndex] = {
+          ...oldMacroSub,
+          d: finalFittedD || oldMacroSub.d,
+          customData: {
+            ...(oldMacroSub.customData || {}),
+            subItems: mapEntity.paths
+          }
+        };
+      }
 
       const updatedCountryMap: ProvinceData = {
-        ...countryMap, // Mantiene los metadatos del mapa macro
-        municipalities: updatedCountryMunicipalities // Inyecta la lista de provincias con la silueta actualizada
+        ...countryMap,
+        municipalities: updatedCountryMunicipalities
       };
-
-      // Guarda la lista de rutas calibradas en localStorage para consumo del mapa principal
-      const rawCalibrated = safeGetItem('argentina_calibrated_map_paths');
-      let currentCalibrated: { id: string; d: string }[] = [];
-      if (rawCalibrated) {
-        try { currentCalibrated = JSON.parse(rawCalibrated); } catch (e) {}
-      }
-      if (!Array.isArray(currentCalibrated) || currentCalibrated.length === 0) {
-        currentCalibrated = provincePaths.map(p => ({ id: p.id, d: p.d }));
-      }
-      const calIndex = currentCalibrated.findIndex(p => p.id === targetIdToSync || p.id.toLowerCase() === activeTargetId.toLowerCase() || p.id.toLowerCase().replace(/^ar-/, '') === targetNormalized);
-      if (calIndex !== -1) {
-        currentCalibrated[calIndex].d = finalFittedD;
-      } else {
-        currentCalibrated.push({ id: targetIdToSync, d: finalFittedD });
-      }
-      safeSetItem('argentina_calibrated_map_paths', JSON.stringify(currentCalibrated));
-      safeSetItem('argentina_paths_last_updated', Date.now().toString());
 
       // Guarda la versión actualizada de Argentina en localStorage
       safeSetItem('argentina_advanced_canvas_map_COUNTRY_MAP', JSON.stringify({
@@ -2926,16 +3952,128 @@ export default function AdvancedCanvasEditor({
         }))
       }));
 
-      onUpdateProvince(updatedCountryMap); // Notifica el cambio en el mapa de Argentina para que impacte en la UI principal
-
-      window.dispatchEvent(new Event('storage')); // Notifica actualización a todos los componentes
-      window.dispatchEvent(new CustomEvent('mapDataUpdated', { detail: { provinceId: targetIdToSync, d: finalFittedD } }));
+      onUpdateProvince(updatedCountryMap);
     }
 
-    // Actualiza el snapshot inicial con la nueva versión recién guardada (marca de arrepentimiento)
-    initialMapSnapshotRef.current = JSON.parse(JSON.stringify(mapEntity)); // Clona el snapshot actualizado
+    // 8. Notifica a toda la ventana del navegador para recarga inmediata en el mapa interactivo
+    window.dispatchEvent(new CustomEvent('argentina_paths_updated'));
+    window.dispatchEvent(new Event('storage'));
+    window.dispatchEvent(new CustomEvent('mapDataUpdated', { detail: { provinceId: activeTargetId, d: finalFittedD } }));
 
-    showNotify("[💾] Cambios aplicados e impactados en el mapa principal. La nueva forma respeta la medida y ubicación exacta."); // Notificación de éxito
+    // Actualiza el snapshot inicial con la nueva versión recién guardada
+    initialMapSnapshotRef.current = JSON.parse(JSON.stringify(mapEntity));
+
+    showNotify(`[✅] ¡Cambios aplicados con éxito! La nueva forma de "${activeTargetName}" se ha actualizado en el mapa principal respetando sus medidas y ubicación exactas.`);
+  };
+
+  // GUARDAR MAPA EN LA APLICACIÓN / PERSISTENCIA EN TIEMPO REAL CON MODAL PREVIO DE SEGURIDAD
+  const handleSaveMapToApp = () => { // Función principal para aplicar cambios y sincronizar con la aplicación
+    if (!canEditMap) return; // Validación de permisos de edición
+
+    // Detecta si la entidad actual es el Mapa Mundial o un mapa provincial/nacional
+    const isWorldLevel = mapEntity.level === 'world' || 
+                         mapEntity.id === 'WORLD_MAP' || 
+                         mapEntity.id?.toLowerCase().includes('world') ||
+                         mapEntity.title?.toLowerCase().includes('mundial') || 
+                         mapEntity.title?.toLowerCase().includes('world');
+
+    const activeTargetId = isWorldLevel ? 'WORLD_MAP' : (selectedProvince?.id || mapEntity.id || 'country');
+    const activeTargetName = isWorldLevel ? (mapEntity.title || 'Mapa Mundial') : (selectedProvince?.name || mapEntity.title || 'Mapa Actual');
+    const rawUnifiedD = mapEntity.paths.map(p => (p.d || '').trim()).filter(Boolean).join(' ');
+
+    // Polígonos del estado previo / original (antes de las ediciones realizadas)
+    const previousPaths: VectorPathItem[] = (initialMapSnapshotRef.current?.paths && initialMapSnapshotRef.current.paths.length > 0)
+      ? initialMapSnapshotRef.current.paths
+      : (historyStack && historyStack.length > 0 && historyStack[0].paths && historyStack[0].paths.length > 0)
+      ? historyStack[0].paths
+      : (!isWorldLevel && selectedProvince?.municipalities && selectedProvince.municipalities.length > 0)
+      ? selectedProvince.municipalities.map(m => ({
+          id: m.id,
+          name: m.name,
+          d: m.d || '',
+          category: m.layer || 'subdivision',
+          ownerId: 'system',
+          visualStyles: {
+            fillColor: m.visualStyles?.fillColor || m.color || '#38bdf8',
+            strokeColor: m.visualStyles?.strokeColor || '#0f172a',
+            strokeWidth: 1.2
+          },
+          customData: {
+            valor: m.value,
+            porcentaje: m.percentage,
+            fill: m.visualStyles?.fillColor || m.color || '#38bdf8'
+          }
+        }))
+      : mapEntity.paths;
+
+    // Calcula el trazado unificado completo del estado anterior para la silueta
+    const previousUnifiedD = previousPaths.map(p => (p.d || '').trim()).filter(Boolean).join(' ');
+
+    // Abre el modal de confirmación con vista previa visual SVG y diagnóstico exacto antes vs después
+    setSafetyModalConfig({
+      isOpen: true,
+      targetId: activeTargetId,
+      targetName: activeTargetName,
+      targetCurrentD: previousUnifiedD,
+      targetPaths: previousPaths,
+      proposedD: rawUnifiedD,
+      proposedName: `${mapEntity.title || activeTargetName} (${mapEntity.paths.length} polígonos)`,
+      proposedPaths: mapEntity.paths,
+      operationType: 'save_map',
+      onConfirmReplace: () => {
+        executeDirectSaveMapToApp();
+      },
+      onConfirmAsIndependent: isPathMatchingMalvinas(rawUnifiedD) ? () => {
+        // Guarda Malvinas de forma independiente sin alterar Tierra del Fuego
+        restoreTierraDelFuegoToOriginal();
+        const rawCalibrated = safeGetItem('argentina_calibrated_map_paths');
+        let currentCal: Array<{ id: string; name?: string; d: string }> = [];
+        if (rawCalibrated) {
+          try { currentCal = JSON.parse(rawCalibrated); } catch (e) {}
+        }
+        const mlvIdx = currentCal.findIndex(c => c.id === 'AR-MLV' || (c.name && c.name.toLowerCase().includes('malvin')));
+        if (mlvIdx !== -1) {
+          currentCal[mlvIdx].d = rawUnifiedD || CANONICAL_MALVINAS_D;
+          currentCal[mlvIdx].name = 'Islas Malvinas';
+          currentCal[mlvIdx].id = 'AR-MLV';
+        } else {
+          currentCal.push({ id: 'AR-MLV', name: 'Islas Malvinas', d: rawUnifiedD || CANONICAL_MALVINAS_D });
+        }
+        safeSetItem('argentina_calibrated_map_paths', JSON.stringify(currentCal));
+        safeSetItem('argentina_paths_last_updated', Date.now().toString());
+        window.dispatchEvent(new CustomEvent('argentina_paths_updated'));
+        showNotify("✅ Islas Malvinas agregadas como territorio soberano independiente. ¡Tierra del Fuego protegida e intacta!");
+      } : undefined
+    });
+  };
+
+  // RESTAURACIONES RÁPIDAS DE EMERGENCIA CON UN SOLO CLIC
+  const handleQuickRestoreTierraDelFuego = () => {
+    restoreTierraDelFuegoToOriginal();
+    showNotify("🛡️ Tierra del Fuego ha sido restaurada con su trazado original histórico.");
+    // Si estamos viendo Tierra del Fuego, recarga los paths en el lienzo
+    if (selectedProvince?.id === 'AR-V') {
+      const cleanEntity = {
+        ...mapEntity,
+        paths: [{
+          id: 'AR-V',
+          name: 'Tierra del Fuego',
+          d: CANONICAL_TIERRA_DEL_FUEGO_D,
+          category: 'provincia',
+          ownerId: 'system',
+          visualStyles: { fillColor: '#10b981', strokeColor: '#0f172a', strokeWidth: 1.5 },
+          customData: { valor: 45, porcentaje: 20 }
+        }]
+      };
+      setMapEntity(cleanEntity);
+    }
+  };
+
+  const handleQuickRestoreFullArgentina = () => {
+    if (window.confirm("¿Deseas restaurar todas las provincias de Argentina a sus trazados originales históricos de fábrica?")) {
+      autoRepairArgentinaMap();
+      showNotify("🛡️ Mapa completo de Argentina restaurado y verificado con éxito.");
+    }
   }; // Fin de handleSaveMapToApp
 
   // FUNCIÓN CENTRAL DE PROCESAMIENTO VECTORIAL ASISTIDO POR IA CON BARRA DE PROGRESO % Y DETECCIÓN DE TRABADO
@@ -3280,6 +4418,20 @@ export default function AdvancedCanvasEditor({
 
             {/* MENÚ FLOTANTE GESTOR DE HISTORIAL Y LIMPIEZA */}
             <div className="relative">
+              {/* BOTÓN HISTORIAL VISUAL ANTIGRAVITY (TIMELINE CON PREVIEWS Y RESTAURACIÓN) */}
+              <button
+                type="button"
+                onClick={() => setIsVisualHistoryModalOpen(true)}
+                className="py-1.5 px-2.5 rounded-xl text-xs font-bold border transition-all cursor-pointer flex items-center space-x-1.5 bg-indigo-950/60 hover:bg-indigo-900/80 text-indigo-300 border-indigo-500/40 shadow-sm"
+                title="Abrir Historial Visual de Versiones estilo Antigravity (previsualización, diff y restauración)"
+              >
+                <History size={13} className="text-indigo-400" />
+                <span>Historial Visual</span>
+                <span className="text-[10px] bg-slate-950 px-1.5 py-0.5 rounded-full text-indigo-300 font-extrabold border border-indigo-500/30">
+                  {historyStack.length}
+                </span>
+              </button>
+
               <button
                 type="button"
                 onClick={() => setIsHistoryMenuOpen(!isHistoryMenuOpen)}
@@ -3288,10 +4440,9 @@ export default function AdvancedCanvasEditor({
                     ? 'bg-amber-500/20 text-amber-300 border-amber-500/40' 
                     : 'bg-slate-800 hover:bg-slate-700 text-slate-300 border-slate-700'
                 }`}
-                title="Ver historial de cambios y gestionar memoria"
+                title="Ver lista rápida de pasos y gestionar memoria"
               >
-                <History size={13} className="text-emerald-400" />
-                <span className="text-[10px] bg-slate-950 px-1.5 py-0.5 rounded-full text-emerald-400 font-extrabold border border-emerald-500/30">
+                <span className="text-[10px] text-slate-400 font-mono">
                   {historyStack.length > 0 ? `${historyIndex + 1}/${historyStack.length}` : '0'}
                 </span>
               </button>
@@ -3304,7 +4455,7 @@ export default function AdvancedCanvasEditor({
                 >
                   <div className="flex items-center justify-between border-b border-slate-800 pb-1.5 px-1">
                     <span className="text-[10px] text-emerald-400 font-black uppercase tracking-wider flex items-center gap-1">
-                      <History size={11} /> Historial de Pasos ({historyStack.length})
+                      <History size={11} /> Pasos Recientes ({historyStack.length})
                     </span>
                     <button
                       type="button"
@@ -3341,20 +4492,66 @@ export default function AdvancedCanvasEditor({
                     ))}
                   </div>
 
+                  {/* BOTÓN PARA ABRIR EL HISTORIAL VISUAL COMPLETO */}
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setIsHistoryMenuOpen(false);
+                      setIsVisualHistoryModalOpen(true);
+                    }}
+                    className="w-full py-1.5 px-2 bg-indigo-950/50 hover:bg-indigo-900/70 border border-indigo-500/40 text-indigo-300 rounded-xl text-[10px] font-bold transition-all cursor-pointer flex items-center justify-center gap-1 mt-1"
+                  >
+                    <Eye size={11} />
+                    <span>Abrir Visor Visual Antigravity</span>
+                  </button>
+
                   {/* BOTÓN PARA LIMPIAR HISTORIAL Y ELIMINAR ESTADOS PASADOS DE MEMORIA */}
                   <button
                     type="button"
                     onClick={handleClearHistory}
-                    className="w-full py-1.5 px-2 bg-rose-950/40 hover:bg-rose-900/60 border border-rose-500/30 text-rose-300 rounded-xl text-[10px] font-bold transition-all cursor-pointer flex items-center justify-center gap-1 mt-1"
+                    className="w-full py-1.5 px-2 bg-rose-950/40 hover:bg-rose-900/60 border border-rose-500/30 text-rose-300 rounded-xl text-[10px] font-bold transition-all cursor-pointer flex items-center justify-center gap-1"
                     title="Elimina los pasos anteriores conservando solo el estado actual para liberar memoria y espacio local"
                   >
                     <Trash2 size={11} />
-                    <span>Limpiar Historial (Liberar Espacio)</span>
+                    <span>Limpiar Historial (Liberar Memoria)</span>
                   </button>
                 </div>
               )}
             </div>
           </div>
+
+          {/* INDICADOR DE CAMBIOS PENDIENTES */}
+          {hasPendingChanges && (
+            <div className="hidden lg:flex items-center space-x-1.5 px-2.5 py-1 bg-amber-500/10 border border-amber-500/30 rounded-xl text-amber-300 text-[11px] font-bold animate-pulse">
+              <span className="w-2 h-2 rounded-full bg-amber-400"></span>
+              <span>Cambios pendientes</span>
+            </div>
+          )}
+
+          {/* ALERTA / BOTÓN RESTAURACIÓN RÁPIDA DE ISLAS MALVINAS SI NO ESTÁN EN EL MAPA */}
+          {isMalvinasMissing && canEditMap && (
+            <button
+              type="button"
+              onClick={handleQuickRestoreMalvinas}
+              className="hidden md:flex py-1.5 px-3 bg-amber-500/20 hover:bg-amber-500/30 border border-amber-500/50 text-amber-300 rounded-xl text-xs font-bold transition-all cursor-pointer items-center space-x-1.5 shadow-md hover:scale-105"
+              title="Las Islas Malvinas no están en este mapa. Haz clic para restaurarlas automáticamente en 1 clic."
+            >
+              <Sparkles size={13} className="text-amber-400 animate-spin" />
+              <span>Restaurar Malvinas</span>
+            </button>
+          )}
+
+          {/* BOTÓN PRINCIPAL: AGREGAR NUEVO ELEMENTO / TERRITORIO / MIEMBRO */}
+          <button
+            type="button"
+            onClick={() => setIsAddElementModalOpen(true)}
+            disabled={!canEditMap}
+            className="py-1.5 px-3.5 bg-gradient-to-r from-emerald-500 via-teal-400 to-cyan-400 hover:from-emerald-400 hover:to-cyan-300 text-slate-950 font-black rounded-xl text-xs uppercase tracking-wider transition-all cursor-pointer flex items-center space-x-1.5 shadow-lg shadow-emerald-950/50 hover:scale-105 active:scale-95"
+            title="Agregar nuevo elemento, isla, territorio, miembro o figura sin reemplazar nada"
+          >
+            <Plus size={14} className="stroke-[3]" />
+            <span>➕ Agregar Elemento</span>
+          </button>
 
           {/* BOTÓN DE CANCELAR SIN GUARDAR (DESCARTAR CAMBIOS Y REVERTIR AL ESTADO INICIAL) */}
           <button
@@ -3365,14 +4562,19 @@ export default function AdvancedCanvasEditor({
             title="Descarca todos los cambios no guardados y vuelve al estado original"
           >
             <RotateCcw size={13} className="text-rose-400" />
-            <span>Cancelar sin guardar</span>
+            <span>Descartar Cambios</span>
           </button>
 
-          {/* Guardar cambios globales */}
+          {/* Guardar cambios globales / Aplicar Cambios */}
           <button
             onClick={handleSaveMapToApp}
             disabled={!canEditMap}
-            className="py-1.5 px-3.5 bg-emerald-600 hover:bg-emerald-500 disabled:opacity-40 text-slate-950 font-black rounded-xl text-xs uppercase tracking-wider transition-all cursor-pointer flex items-center space-x-1.5 shadow-lg shadow-emerald-950/40"
+            className={`py-1.5 px-3.5 disabled:opacity-40 font-black rounded-xl text-xs uppercase tracking-wider transition-all cursor-pointer flex items-center space-x-1.5 shadow-lg ${
+              hasPendingChanges
+                ? 'bg-emerald-500 hover:bg-emerald-400 text-slate-950 shadow-emerald-500/30 ring-2 ring-emerald-400/50'
+                : 'bg-emerald-600 hover:bg-emerald-500 text-slate-950 shadow-emerald-950/40'
+            }`}
+            title="Aplica todos los cambios y sincroniza el mapa con la aplicación"
           >
             <Save size={13} />
             <span>Aplicar Cambios</span>
@@ -3389,6 +4591,93 @@ export default function AdvancedCanvasEditor({
             <Globe size={13} />
             <span>Asociar a Otra Ruta</span>
           </button>
+
+          {/* BOTÓN Y MENÚ DE BLINDAJE GEOGRÁFICO Y RECUPERACIÓN HISTÓRICA */}
+          <div className="relative">
+            <button
+              type="button"
+              onClick={() => setIsSafetyRecoveryMenuOpen(!isSafetyRecoveryMenuOpen)}
+              className="py-1.5 px-3 bg-indigo-950/70 hover:bg-indigo-900/90 text-indigo-300 border border-indigo-500/40 rounded-xl text-xs font-bold transition-all cursor-pointer flex items-center space-x-1.5 shadow-md shadow-indigo-950/40"
+              title="Opciones de blindaje y recuperación de Tierra del Fuego, Malvinas y provincias de Argentina"
+            >
+              <ShieldAlert size={13} className="text-indigo-400" />
+              <span>🛡️ Blindaje Geográfico</span>
+            </button>
+
+            {isSafetyRecoveryMenuOpen && (
+              <div 
+                onClick={(e) => e.stopPropagation()}
+                className="absolute right-0 mt-2 w-72 bg-slate-950 border border-indigo-500/30 rounded-2xl shadow-2xl p-3 space-y-2 z-50 animate-fadeIn text-left"
+              >
+                <div className="flex items-center justify-between border-b border-slate-800 pb-1.5">
+                  <span className="text-[11px] font-bold text-indigo-300 flex items-center gap-1.5">
+                    <ShieldAlert size={13} className="text-indigo-400" />
+                    Blindaje y Recuperación
+                  </span>
+                  <button
+                    onClick={() => setIsSafetyRecoveryMenuOpen(false)}
+                    className="p-1 hover:bg-slate-800 text-slate-400 rounded-lg text-xs"
+                  >
+                    ✕
+                  </button>
+                </div>
+
+                <p className="text-[10px] text-slate-400 leading-relaxed">
+                  Restaura instantáneamente las formas originales de fábrica sin perder tus otros datos:
+                </p>
+
+                <div className="space-y-1.5 pt-1">
+                  {/* Restaurar Tierra del Fuego */}
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setIsSafetyRecoveryMenuOpen(false);
+                      handleQuickRestoreTierraDelFuego();
+                    }}
+                    className="w-full text-left p-2 rounded-xl bg-slate-900 hover:bg-slate-800 border border-emerald-900/40 hover:border-emerald-500/50 text-slate-200 text-xs transition-all flex items-center gap-2"
+                  >
+                    <span className="w-2 h-2 rounded-full bg-emerald-500"></span>
+                    <div className="flex-1 min-w-0">
+                      <div className="font-semibold text-emerald-300 truncate">Restaurar Tierra del Fuego</div>
+                      <div className="text-[10px] text-slate-400 truncate">Recupera la silueta original histórica (AR-V)</div>
+                    </div>
+                  </button>
+
+                  {/* Restaurar Islas Malvinas */}
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setIsSafetyRecoveryMenuOpen(false);
+                      handleQuickRestoreMalvinas();
+                    }}
+                    className="w-full text-left p-2 rounded-xl bg-slate-900 hover:bg-slate-800 border border-sky-900/40 hover:border-sky-500/50 text-slate-200 text-xs transition-all flex items-center gap-2"
+                  >
+                    <span className="w-2 h-2 rounded-full bg-sky-500"></span>
+                    <div className="flex-1 min-w-0">
+                      <div className="font-semibold text-sky-300 truncate">Restaurar Islas Malvinas</div>
+                      <div className="text-[10px] text-slate-400 truncate">Reinserta el archipiélago en su posición (AR-MLV)</div>
+                    </div>
+                  </button>
+
+                  {/* Restaurar Mapa Completo */}
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setIsSafetyRecoveryMenuOpen(false);
+                      handleQuickRestoreFullArgentina();
+                    }}
+                    className="w-full text-left p-2 rounded-xl bg-slate-900 hover:bg-slate-800 border border-indigo-900/40 hover:border-indigo-500/50 text-slate-200 text-xs transition-all flex items-center gap-2"
+                  >
+                    <span className="w-2 h-2 rounded-full bg-indigo-500"></span>
+                    <div className="flex-1 min-w-0">
+                      <div className="font-semibold text-indigo-300 truncate">Auto-Reparar Mapa Completo</div>
+                      <div className="text-[10px] text-slate-400 truncate">Verifica y repara las 24 provincias</div>
+                    </div>
+                  </button>
+                </div>
+              </div>
+            )}
+          </div>
 
           {/* BOTONES PARA ESCONDER / OCULTAR PANELES LATERALES (RESALTADOS EN ROJO POR EL USUARIO) */}
           <div className="flex items-center space-x-1 border-l border-slate-800 pl-2">
@@ -3450,6 +4739,16 @@ export default function AdvancedCanvasEditor({
                 </h3>
               </div>
               <div className="flex items-center space-x-1.5">
+                <button
+                  type="button"
+                  onClick={() => setIsAddElementModalOpen(true)}
+                  disabled={!canEditMap}
+                  className="text-[10px] font-extrabold text-emerald-300 hover:text-emerald-200 bg-emerald-600/30 hover:bg-emerald-600/50 border border-emerald-500/50 px-2 py-0.5 rounded-md transition-all cursor-pointer flex items-center space-x-1 shadow-xs"
+                  title="Agregar nuevo elemento, miembro o isla al mapa"
+                >
+                  <Plus size={10} className="stroke-[3]" />
+                  <span>Agregar</span>
+                </button>
                 <button
                   onClick={handleSelectAll}
                   className="text-[10px] font-extrabold text-emerald-400 hover:text-emerald-300 bg-emerald-950/80 border border-emerald-800/60 px-2 py-0.5 rounded-md transition-all cursor-pointer flex items-center space-x-1 shadow-xs"
@@ -3608,6 +4907,34 @@ export default function AdvancedCanvasEditor({
                               <Unlink size={11} />
                             </button>
                           )}
+
+                          {/* Botón Asociar Directo al Clic en Mapa */}
+                          <button
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              handleStartDirectAssociateToMap(p.id);
+                            }}
+                            className="p-1 hover:bg-purple-500/20 rounded text-purple-400 hover:text-purple-300 transition-colors"
+                            title="🎯 Asociar directamente al hacer clic en el mapa (ej: a Argentina u otra provincia sin modales)"
+                          >
+                            <Target size={11} />
+                          </button>
+
+                          {/* Botón Combinar / Unir con otro objeto */}
+                          <button
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              setCombineSourcePathId(p.id);
+                              // Por defecto preselecciona otro objeto si hay alguno
+                              const other = mapEntity.paths.find(op => op.id !== p.id);
+                              setCombineTargetPathId(other ? other.id : '');
+                              setIsCombineObjectModalOpen(true);
+                            }}
+                            className="p-1 hover:bg-purple-500/20 rounded text-purple-400 hover:text-purple-300 transition-colors"
+                            title="Combinar o unir con otro trazado / territorio"
+                          >
+                            <GitMerge size={11} />
+                          </button>
 
                           {/* Botón Vincular Territorio */}
                           <button
@@ -4058,15 +5385,17 @@ export default function AdvancedCanvasEditor({
         {/* COLUMNA CENTRAL: CANVAS INTERACTIVO CON SVG Y NODOS DE ESCALA/TRANSLACIÓN */}
         <div className="flex-1 bg-slate-950 relative flex flex-col overflow-hidden items-center justify-center p-4">
           
-          {/* CONTROLES AVANZADOS DE ZOOM Y HERRAMIENTAS DE VISOR CON PORCENTAJE EDITABLE, SLIDER EXTRA Y AJUSTE VISUAL */}
+          {/* CONTROLES DE ZOOM Y HERRAMIENTA MANITO */}
           <div className="absolute top-4 right-4 bg-slate-900/95 border border-slate-800 rounded-xl p-1.5 flex items-center space-x-1.5 z-20 shadow-2xl backdrop-blur-md">
             {/* BOTÓN HERRAMIENTA MANITO (MOVER / ARRASTRAR MAPA LIBREMENTE) */}
             <button
-              onClick={() => setIsPanToolActive(!isPanToolActive)}
+              onClick={() => {
+                setIsPanToolActive(!isPanToolActive);
+              }}
               className={`px-2 py-1 rounded-lg text-[10px] font-bold transition-all cursor-pointer flex items-center space-x-1 border ${
                 isPanToolActive
-                  ? 'bg-emerald-500 text-slate-950 border-emerald-400 shadow-[0_0_12px_rgba(16,185,129,0.7)]'
-                  : 'bg-slate-950 hover:bg-slate-800 text-slate-300 border-slate-800 hover:text-emerald-400'
+                  ? 'bg-sky-500 text-slate-950 border-sky-400 shadow-[0_0_12px_rgba(14,165,233,0.7)]'
+                  : 'bg-slate-950 hover:bg-slate-800 text-slate-300 border-slate-800 hover:text-sky-400'
               }`}
               title={isPanToolActive ? "Desactivar Herramienta Manito" : "Activar Herramienta Manito (Mover y Arrastrar Mapa o Dibujo Libremente)"}
             >
@@ -4137,26 +5466,72 @@ export default function AdvancedCanvasEditor({
 
             {/* BOTÓN FOCUS SELECCIÓN (CENTRAR EL ZOOM EN EL OBJETO SELECCIONADO) */}
             {selectedPathIds.length > 0 && (
-              <button
-                onClick={handleFocusOnSelection}
-                className="px-2 py-1 bg-emerald-500/20 hover:bg-emerald-500/30 text-emerald-300 border border-emerald-500/40 rounded-lg text-[10px] font-bold transition-all cursor-pointer flex items-center space-x-1 shadow-[0_0_10px_rgba(16,185,129,0.3)] animate-fade-in"
-                title="Centrar el zoom y la pantalla directamente en la figura u objeto seleccionado"
-              >
-                <Target size={12} className="text-emerald-400" />
-                <span>Focus Selección</span>
-              </button>
-            )}
+              <>
+                <button
+                  onClick={handleFocusOnSelection}
+                  className="px-2 py-1 bg-emerald-500/20 hover:bg-emerald-500/30 text-emerald-300 border border-emerald-500/40 rounded-lg text-[10px] font-bold transition-all cursor-pointer flex items-center space-x-1 shadow-[0_0_10px_rgba(16,185,129,0.3)] animate-fade-in"
+                  title="Centrar el zoom y la pantalla directamente en la figura u objeto seleccionado"
+                >
+                  <Target size={12} className="text-emerald-400" />
+                  <span>Enfocar</span>
+                </button>
 
-            {/* BOTÓN DESELECCIONAR (LIMPIAR LA SELECCIÓN ACTIVA) */}
-            {selectedPathIds.length > 0 && (
-              <button
-                onClick={() => setSelectedPathIds([])}
-                className="px-2 py-1 bg-slate-800 hover:bg-slate-700 text-slate-300 border border-slate-700 rounded-lg text-[10px] font-bold transition-all cursor-pointer flex items-center space-x-1 animate-fade-in"
-                title="Deseleccionar todos los polígonos y figuras"
-              >
-                <X size={12} className="text-slate-400" />
-                <span>Deseleccionar ({selectedPathIds.length})</span>
-              </button>
+                {/* BOTÓN DUPLICAR SELECCIÓN */}
+                <button
+                  onClick={handleDuplicateSelectedPaths}
+                  disabled={!canEditMap}
+                  className="px-2 py-1 bg-sky-500/20 hover:bg-sky-500/30 text-sky-300 border border-sky-500/40 rounded-lg text-[10px] font-bold transition-all cursor-pointer flex items-center space-x-1 animate-fade-in disabled:opacity-40"
+                  title="Duplicar o copiar los elementos seleccionados para editarlos por separado"
+                >
+                  <Copy size={12} className="text-sky-400" />
+                  <span>Duplicar ({selectedPathIds.length})</span>
+                </button>
+
+                {/* BOTÓN GUARDAR SELECCIÓN APARTE */}
+                <button
+                  onClick={handleSaveSelectionSeparately}
+                  className="px-2 py-1 bg-indigo-500/20 hover:bg-indigo-500/30 text-indigo-300 border border-indigo-500/40 rounded-lg text-[10px] font-bold transition-all cursor-pointer flex items-center space-x-1 animate-fade-in"
+                  title="Exportar y guardar solo los elementos seleccionados como un archivo independiente"
+                >
+                  <Download size={12} className="text-indigo-400" />
+                  <span>Guardar Aparte</span>
+                </button>
+
+                {/* BOTÓN AISLAR / VER TODO EL MAPA */}
+                <button
+                  onClick={toggleFocusIsolation}
+                  className={`px-2 py-1 rounded-lg text-[10px] font-bold transition-all cursor-pointer flex items-center space-x-1 animate-fade-in border ${
+                    isFocusIsolated
+                      ? 'bg-amber-500 text-slate-950 border-amber-400 shadow-md font-black'
+                      : 'bg-slate-800 hover:bg-slate-700 text-slate-300 border-slate-700'
+                  }`}
+                  title={isFocusIsolated ? "Volver a mostrar todos los polígonos del mapa" : "Aislar visualmente solo la selección"}
+                >
+                  {isFocusIsolated ? <Eye size={12} /> : <EyeOff size={12} />}
+                  <span>{isFocusIsolated ? 'Ver Todo' : 'Aislar'}</span>
+                </button>
+
+                {/* BOTÓN ELIMINAR SELECCIÓN */}
+                <button
+                  onClick={() => handleDeleteSelectedPaths(selectedPathIds)}
+                  disabled={!canEditMap}
+                  className="px-2 py-1 bg-rose-500/20 hover:bg-rose-500/30 text-rose-300 border border-rose-500/40 rounded-lg text-[10px] font-bold transition-all cursor-pointer flex items-center space-x-1 animate-fade-in disabled:opacity-40"
+                  title="Eliminar los elementos seleccionados conservando el resto del mapa"
+                >
+                  <Trash2 size={12} className="text-rose-400" />
+                  <span>Eliminar ({selectedPathIds.length})</span>
+                </button>
+
+                {/* BOTÓN DESELECCIONAR */}
+                <button
+                  onClick={() => setSelectedPathIds([])}
+                  className="px-2 py-1 bg-slate-800 hover:bg-slate-700 text-slate-300 border border-slate-700 rounded-lg text-[10px] font-bold transition-all cursor-pointer flex items-center space-x-1 animate-fade-in"
+                  title="Deseleccionar todos los polígonos y figuras"
+                >
+                  <X size={12} className="text-slate-400" />
+                  <span>Deseleccionar</span>
+                </button>
+              </>
             )}
 
             {/* Botón Restablecer a 100% */}
@@ -4191,7 +5566,7 @@ export default function AdvancedCanvasEditor({
               <rect width="100%" height="100%" fill="url(#editorGrid)" />
 
               {/* GRUPO PRINCIPAL CON TRANSFORMACIÓN GLOBAL (ESCALA + PAN X/Y) */}
-              <g transform={`translate(${mapEntity.transform.translateX}, ${mapEntity.transform.translateY}) scale(${mapEntity.transform.scale})`}>
+              <g transform={`translate(${mapEntity?.transform?.translateX ?? 0}, ${mapEntity?.transform?.translateY ?? 0}) scale(${mapEntity?.transform?.scale ?? 1})`}>
                 
                 {/* RENDERIZADO DE TODOS LOS TRAZOS VECTORIALES */}
                 {mapEntity.paths.map(p => {
@@ -4562,8 +5937,17 @@ export default function AdvancedCanvasEditor({
               </span>
               <div className="w-px h-5 bg-slate-800" />
               <button
+                type="button"
+                onClick={() => setIsAddElementModalOpen(true)}
+                className="py-1.5 px-3.5 bg-gradient-to-r from-emerald-500 to-teal-400 hover:from-emerald-400 hover:to-teal-300 text-slate-950 font-black rounded-xl text-xs uppercase tracking-wider transition-all cursor-pointer flex items-center space-x-1.5 shadow-lg shadow-emerald-950/40 hover:scale-105"
+                title="Agregar nuevo elemento, isla, territorio o miembro al mapa"
+              >
+                <Plus size={14} className="stroke-[3]" />
+                <span>➕ Agregar Elemento</span>
+              </button>
+              <button
                 onClick={handleSelectAll}
-                className="py-1.5 px-3.5 bg-emerald-600 hover:bg-emerald-500 text-slate-950 font-black rounded-xl text-xs uppercase tracking-wider transition-all cursor-pointer flex items-center space-x-1.5 shadow-lg shadow-emerald-950/40 hover:scale-105"
+                className="py-1.5 px-3.5 bg-slate-800 hover:bg-slate-700 text-slate-200 font-bold rounded-xl text-xs uppercase tracking-wider transition-all cursor-pointer flex items-center space-x-1.5 border border-slate-700 hover:scale-105"
                 title="Seleccionar todas las porciones y polígonos del mapa a la vez"
               >
                 <CheckSquare size={14} />
@@ -4579,6 +5963,17 @@ export default function AdvancedCanvasEditor({
               </span>
 
               <div className="w-px h-5 bg-slate-800" />
+
+              {/* Botón Agregar Elemento Rápido */}
+              <button
+                type="button"
+                onClick={() => setIsAddElementModalOpen(true)}
+                className="py-1 px-2.5 rounded-lg text-xs font-bold bg-emerald-500/20 hover:bg-emerald-500/30 text-emerald-300 border border-emerald-500/40 transition-all cursor-pointer flex items-center space-x-1"
+                title="Agregar otro elemento o territorio adicional al mapa"
+              >
+                <Plus size={12} className="stroke-[3]" />
+                <span>Agregar Otro</span>
+              </button>
 
               {/* Botón Seleccionar Todo / Alternar Selección Completa */}
               <button
@@ -4602,6 +5997,86 @@ export default function AdvancedCanvasEditor({
               >
                 <Target size={12} className="text-emerald-400" />
                 <span>Focus Selección</span>
+              </button>
+
+              {/* BOTÓN MODO MOVER EN LA BARRA DE ACCIÓN INFERIOR */}
+              <button
+                onClick={toggleMoveMode}
+                className={`py-1 px-2.5 rounded-lg text-xs font-black transition-all cursor-pointer flex items-center space-x-1 border uppercase tracking-wider ${
+                  canvasMode === 'move'
+                    ? 'bg-emerald-500 text-slate-950 border-emerald-400 shadow-[0_0_12px_rgba(16,185,129,0.7)]'
+                    : 'bg-emerald-500/10 hover:bg-emerald-500/20 text-emerald-300 border-emerald-500/30'
+                }`}
+                title="Activar Modo Mover exclusivo para arrastrar y reubicar este elemento"
+              >
+                <Move size={12} />
+                <span>{canvasMode === 'move' ? '✥ Moviendo' : 'Mover'}</span>
+              </button>
+
+              {/* BOTÓN MODO REDIMENSIONAR EN LA BARRA DE ACCIÓN INFERIOR */}
+              <button
+                onClick={toggleResizeMode}
+                className={`py-1 px-2.5 rounded-lg text-xs font-black transition-all cursor-pointer flex items-center space-x-1 border uppercase tracking-wider ${
+                  canvasMode === 'resize'
+                    ? 'bg-purple-500 text-slate-950 border-purple-400 shadow-[0_0_12px_rgba(168,85,247,0.7)]'
+                    : 'bg-purple-500/10 hover:bg-purple-500/20 text-purple-300 border-purple-500/30'
+                }`}
+                title="Activar Modo Redimensionar exclusivo para ajustar escala y tamaño"
+              >
+                <Maximize2 size={12} />
+                <span>{canvasMode === 'resize' ? '⤢ Escalando' : 'Redimensionar'}</span>
+              </button>
+
+              {/* BOTÓN RÁPIDO: UBICAR EN INDICADOR DE RUTA GEOGRÁFICA */}
+              <button
+                onClick={handleAlignWithGeographicRouteMarker}
+                className="py-1 px-2.5 bg-emerald-600/30 hover:bg-emerald-600/50 text-emerald-200 border border-emerald-500/40 rounded-lg text-xs font-bold transition-all cursor-pointer flex items-center space-x-1 shadow-sm"
+                title="Alinear automáticamente con el marcador y animación de ruta geográfica"
+              >
+                <MapPin size={12} className="text-emerald-400" />
+                <span>🎯 Ubicar en Ruta</span>
+              </button>
+
+              {/* BOTÓN ASOCIAR DIRECTAMENTE AL HACER CLIC EN EL MAPA (SIN MODALES) */}
+              {selectedPathIds.length >= 1 && (
+                <button
+                  onClick={() => handleStartDirectAssociateToMap()}
+                  className="py-1 px-3 bg-purple-600 hover:bg-purple-500 text-white rounded-lg text-xs font-black transition-all cursor-pointer flex items-center space-x-1.5 shadow-[0_0_15px_rgba(168,85,247,0.6)] border border-purple-300 animate-pulse"
+                  title="🎯 Asociar al Clic en Mapa: Haz clic aquí y luego toca el país/provincia en el mapa (ej: Argentina) para unirlos directamente sin modales."
+                >
+                  <Target size={13} className="text-white" />
+                  <span>🎯 Asociar al Clic en Mapa</span>
+                </button>
+              )}
+
+              {/* BOTÓN UNIR / COMBINAR CON OTRO OBJETO (SI HAY 1 SELECCIONADO) */}
+              {selectedPathIds.length === 1 && (
+                <button
+                  onClick={() => {
+                    setCombineSourcePathId(selectedPathIds[0]);
+                    const other = mapEntity.paths.find(op => op.id !== selectedPathIds[0]);
+                    setCombineTargetPathId(other ? other.id : '');
+                    setIsCombineObjectModalOpen(true);
+                  }}
+                  className="py-1 px-2.5 bg-purple-600/30 hover:bg-purple-600/50 text-purple-200 border border-purple-500/40 rounded-lg text-xs font-bold transition-all cursor-pointer flex items-center space-x-1 shadow-sm"
+                  title="Unir o combinar este trazo/isla con otro objeto del mapa"
+                >
+                  <GitMerge size={12} className="text-purple-400" />
+                  <span>Unir con...</span>
+                </button>
+              )}
+
+              {/* BOTÓN ASOCIAR / ANEXAR A OTRA RUTA */}
+              <button
+                onClick={() => {
+                  setAssociateScope('selected');
+                  setIsAssociateModalOpen(true);
+                }}
+                className="py-1 px-2.5 bg-sky-600/30 hover:bg-sky-600/50 text-sky-200 border border-sky-500/40 rounded-lg text-xs font-bold transition-all cursor-pointer flex items-center space-x-1 shadow-sm"
+                title="Asociar o anexar los trazos seleccionados a una ruta/provincia de destino"
+              >
+                <Globe size={12} className="text-sky-400" />
+                <span>Asociar a Ruta</span>
               </button>
 
               {/* BOTONES ESTRUCTURALES: AGRUPAR Y COMBINAR */}
@@ -5645,14 +7120,14 @@ export default function AdvancedCanvasEditor({
         </div>
       )}
 
-      {/* MODAL DE ASOCIAR MAPA COMPLETO A OTRA RUTA O PROVINCIA */}
+      {/* MODAL DE ASOCIAR / COMBINAR MAPA A OTRA RUTA O PROVINCIA */}
       {isAssociateModalOpen && (
         <div className="fixed inset-0 bg-slate-950/80 backdrop-blur-md flex items-center justify-center p-4 z-50">
           <div className="bg-slate-900 border border-slate-800 rounded-2xl max-w-lg w-full p-6 shadow-2xl space-y-4 animate-fadeIn">
             <div className="flex justify-between items-center border-b border-slate-800 pb-3">
               <h3 className="text-sm font-black uppercase tracking-wider text-sky-400 flex items-center space-x-2">
                 <Globe size={18} />
-                <span>Asociar Mapa a Otra Ruta / Provincia</span>
+                <span>Asociar o Combinar con Otra Ruta / Provincia</span>
               </h3>
               <button
                 onClick={() => setIsAssociateModalOpen(false)}
@@ -5662,9 +7137,92 @@ export default function AdvancedCanvasEditor({
               </button>
             </div>
 
-            <p className="text-xs text-slate-300 leading-relaxed">
-              Selecciona la provincia o ruta destino donde deseas reemplazar el mapa por este lienzo vectorizado ({mapEntity.paths.length} trazados).
-            </p>
+            {/* Selector de Alcance (Todo el lienzo vs Solo seleccionados) */}
+            <div className="space-y-1 bg-slate-950/70 p-2.5 rounded-xl border border-slate-800/80">
+              <label className="text-[10px] font-black uppercase tracking-widest text-slate-400 block">
+                Alcance del Trazado a Asociar:
+              </label>
+              <div className="grid grid-cols-2 gap-2">
+                <button
+                  type="button"
+                  onClick={() => setAssociateScope('selected')}
+                  disabled={selectedPathIds.length === 0}
+                  className={`py-1.5 px-2 rounded-lg text-xs font-bold transition-all border text-center cursor-pointer ${
+                    associateScope === 'selected' && selectedPathIds.length > 0
+                      ? 'bg-sky-500/20 text-sky-300 border-sky-500/60 font-black shadow-sm'
+                      : 'bg-slate-900 text-slate-400 border-slate-800 hover:text-slate-200 disabled:opacity-30'
+                  }`}
+                >
+                  🎯 Solo Seleccionados ({selectedPathIds.length})
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setAssociateScope('all')}
+                  className={`py-1.5 px-2 rounded-lg text-xs font-bold transition-all border text-center cursor-pointer ${
+                    associateScope === 'all' || selectedPathIds.length === 0
+                      ? 'bg-sky-500/20 text-sky-300 border-sky-500/60 font-black shadow-sm'
+                      : 'bg-slate-900 text-slate-400 border-slate-800 hover:text-slate-200'
+                  }`}
+                >
+                  🌐 Todo el Lienzo ({mapEntity.paths.length})
+                </button>
+              </div>
+            </div>
+
+            {/* Selector de Modo de Asociación */}
+            <div className="space-y-1 bg-slate-950/70 p-2.5 rounded-xl border border-slate-800/80">
+              <label className="text-[10px] font-black uppercase tracking-widest text-slate-400 block">
+                Modo de Integración con la Ruta Destino:
+              </label>
+              <div className="grid grid-cols-3 gap-1.5">
+                <button
+                  type="button"
+                  onClick={() => setAssociateMode('append')}
+                  className={`p-2 rounded-lg text-[10px] font-bold border transition-all text-center flex flex-col items-center justify-center space-y-1 cursor-pointer ${
+                    associateMode === 'append'
+                      ? 'bg-emerald-500/20 text-emerald-300 border-emerald-500/60 shadow-sm'
+                      : 'bg-slate-900 text-slate-400 border-slate-800 hover:text-slate-200'
+                  }`}
+                  title="Añade las piezas/islas al mapa existente de esa ruta sin borrar lo que ya tiene"
+                >
+                  <Puzzle size={14} className="text-emerald-400" />
+                  <span>Anexar / Combinar</span>
+                </button>
+
+                <button
+                  type="button"
+                  onClick={() => setAssociateMode('merge_single')}
+                  className={`p-2 rounded-lg text-[10px] font-bold border transition-all text-center flex flex-col items-center justify-center space-y-1 cursor-pointer ${
+                    associateMode === 'merge_single'
+                      ? 'bg-purple-500/20 text-purple-300 border-purple-500/60 shadow-sm'
+                      : 'bg-slate-900 text-slate-400 border-slate-800 hover:text-slate-200'
+                  }`}
+                  title="Fusiona las geometrías en un solo polígono multi-path compuesto"
+                >
+                  <GitMerge size={14} className="text-purple-400" />
+                  <span>Fusión Multi-path</span>
+                </button>
+
+                <button
+                  type="button"
+                  onClick={() => setAssociateMode('replace')}
+                  className={`p-2 rounded-lg text-[10px] font-bold border transition-all text-center flex flex-col items-center justify-center space-y-1 cursor-pointer ${
+                    associateMode === 'replace'
+                      ? 'bg-amber-500/20 text-amber-300 border-amber-500/60 shadow-sm'
+                      : 'bg-slate-900 text-slate-400 border-slate-800 hover:text-slate-200'
+                  }`}
+                  title="Sobrescribe todo el mapa de la ruta destino"
+                >
+                  <RefreshCw size={14} className="text-amber-400" />
+                  <span>Reemplazar Todo</span>
+                </button>
+              </div>
+              <p className="text-[10px] text-slate-400 pt-1 italic">
+                {associateMode === 'append' && "✨ Modo Anexar: Ideal para islas o subdivisiones. Suma estos trazados a la ruta sin eliminar su territorio principal."}
+                {associateMode === 'merge_single' && "✨ Modo Fusión: Funde este trazo y el territorio destino en una sola figura SVG unificada."}
+                {associateMode === 'replace' && "✨ Modo Reemplazar: Sustituye completamente todo el mapa previo de esa ruta."}
+              </p>
+            </div>
 
             {/* Buscador de ruta destino */}
             <div className="relative">
@@ -5673,13 +7231,13 @@ export default function AdvancedCanvasEditor({
                 type="text"
                 value={associateSearchQuery}
                 onChange={(e) => setAssociateSearchQuery(e.target.value)}
-                placeholder="Buscar provincia o ruta objetivo..."
+                placeholder="Buscar provincia o ruta objetivo (ej: Argentina, Córdoba)..."
                 className="w-full bg-slate-950 border border-slate-800 focus:border-sky-500 rounded-xl py-2 pl-9 pr-4 text-xs text-slate-100 placeholder:text-slate-500 outline-none font-bold"
               />
             </div>
 
             {/* Lista de rutas disponibles */}
-            <div className="max-h-60 overflow-y-auto space-y-1.5 pr-1">
+            <div className="max-h-52 overflow-y-auto space-y-1.5 pr-1">
               {availableTerritories
                 .filter(t => !associateSearchQuery || t.name.toLowerCase().includes(associateSearchQuery.toLowerCase()) || t.id.toLowerCase().includes(associateSearchQuery.toLowerCase()))
                 .map(t => (
@@ -5689,7 +7247,7 @@ export default function AdvancedCanvasEditor({
                     onClick={() => setTargetAssociateRouteId(t.id)}
                     className={`w-full p-2.5 rounded-xl border text-left flex items-center justify-between transition-all cursor-pointer ${
                       targetAssociateRouteId === t.id
-                        ? 'bg-sky-500/20 text-sky-300 border-sky-500/50 font-bold'
+                        ? 'bg-sky-500/20 text-sky-300 border-sky-500/50 font-bold shadow-sm'
                         : 'bg-slate-950/60 hover:bg-slate-800/80 text-slate-300 border-slate-800'
                     }`}
                   >
@@ -5731,12 +7289,418 @@ export default function AdvancedCanvasEditor({
                 className="px-4 py-2 bg-sky-600 hover:bg-sky-500 disabled:opacity-40 text-slate-950 font-black text-xs uppercase tracking-wider rounded-xl transition-all shadow-lg shadow-sky-950/50 flex items-center space-x-1.5 cursor-pointer"
               >
                 <CheckCircle size={14} />
-                <span>Guardar y Asociar a la Ruta</span>
+                <span>Ejecutar Asociación</span>
               </button>
             </div>
           </div>
         </div>
       )}
+
+      {/* MODAL DE COMBINAR / ASOCIAR OBJETO ESPECÍFICO CON OTRO DEL LIENZO */}
+      {isCombineObjectModalOpen && (
+        <div className="fixed inset-0 bg-slate-950/80 backdrop-blur-md flex items-center justify-center p-4 z-50">
+          <div className="bg-slate-900 border border-slate-800 rounded-2xl max-w-lg w-full p-6 shadow-2xl space-y-4 animate-fadeIn">
+            <div className="flex justify-between items-center border-b border-slate-800 pb-3">
+              <h3 className="text-sm font-black uppercase tracking-wider text-purple-400 flex items-center space-x-2">
+                <GitMerge size={18} />
+                <span>Combinar / Unir Objeto con otro Trazado</span>
+              </h3>
+              <button
+                onClick={() => setIsCombineObjectModalOpen(false)}
+                className="text-slate-500 hover:text-slate-300 font-bold text-sm cursor-pointer"
+              >
+                ✕
+              </button>
+            </div>
+
+            {/* Objeto de origen a combinar */}
+            {combineSourcePathId && (() => {
+              const src = mapEntity.paths.find(p => p.id === combineSourcePathId);
+              return (
+                <div className="p-2.5 bg-slate-950 border border-purple-500/30 rounded-xl space-y-2">
+                  <div>
+                    <span className="text-[10px] text-purple-400 font-black uppercase tracking-wider">Objeto a Integrar (Origen / Isla / Parte):</span>
+                    <div className="flex items-center space-x-2 mt-0.5">
+                      <Spline size={14} className="text-purple-400" />
+                      <p className="text-xs font-bold text-slate-200">{src?.name || combineSourcePathId}</p>
+                      <span className="text-[9px] font-mono text-slate-500">({src?.id})</span>
+                    </div>
+                  </div>
+
+                  {/* Acceso Rápido Directo al Clic en Mapa (Sin Modal) */}
+                  <div className="pt-2 border-t border-slate-800 flex items-center justify-between">
+                    <span className="text-[10px] text-purple-300">¿Prefieres tocarlo directo en el mapa?</span>
+                    <button
+                      type="button"
+                      onClick={() => handleStartDirectAssociateToMap(combineSourcePathId)}
+                      className="px-2.5 py-1 bg-purple-600 hover:bg-purple-500 text-white rounded-lg text-[10px] font-black uppercase tracking-wider flex items-center space-x-1 shadow-sm cursor-pointer border border-purple-400"
+                    >
+                      <Target size={11} />
+                      <span>Elegir en Mapa</span>
+                    </button>
+                  </div>
+                </div>
+              );
+            })()}
+
+            {/* Selector del Modo de Combinación entre Objetos */}
+            <div className="space-y-1 bg-slate-950/70 p-2.5 rounded-xl border border-slate-800/80">
+              <label className="text-[10px] font-black uppercase tracking-widest text-slate-400 block">
+                Tipo de Unión / Asociación:
+              </label>
+              <div className="grid grid-cols-3 gap-1.5">
+                <button
+                  type="button"
+                  onClick={() => setCombineObjectMode('merge_geometry')}
+                  className={`p-2 rounded-lg text-[10px] font-bold border transition-all text-center flex flex-col items-center justify-center space-y-1 cursor-pointer ${
+                    combineObjectMode === 'merge_geometry'
+                      ? 'bg-purple-500/20 text-purple-300 border-purple-500/60 shadow-sm'
+                      : 'bg-slate-900 text-slate-400 border-slate-800 hover:text-slate-200'
+                  }`}
+                  title="Une las coordenadas en un solo polígono continuo/discontinuo (se puede descombinar)"
+                >
+                  <GitMerge size={14} className="text-purple-400" />
+                  <span>Fusión Geométrica</span>
+                </button>
+
+                <button
+                  type="button"
+                  onClick={() => setCombineObjectMode('group_hierarchy')}
+                  className={`p-2 rounded-lg text-[10px] font-bold border transition-all text-center flex flex-col items-center justify-center space-y-1 cursor-pointer ${
+                    combineObjectMode === 'group_hierarchy'
+                      ? 'bg-indigo-500/20 text-indigo-300 border-indigo-500/60 shadow-sm'
+                      : 'bg-slate-900 text-slate-400 border-slate-800 hover:text-slate-200'
+                  }`}
+                  title="Crea un Contenedor Padre tipo CorelDRAW conservando trazos independientes"
+                >
+                  <Folder size={14} className="text-indigo-400" />
+                  <span>Agrupar Padre</span>
+                </button>
+
+                <button
+                  type="button"
+                  onClick={() => setCombineObjectMode('same_identity')}
+                  className={`p-2 rounded-lg text-[10px] font-bold border transition-all text-center flex flex-col items-center justify-center space-y-1 cursor-pointer ${
+                    combineObjectMode === 'same_identity'
+                      ? 'bg-sky-500/20 text-sky-300 border-sky-500/60 shadow-sm'
+                      : 'bg-slate-900 text-slate-400 border-slate-800 hover:text-slate-200'
+                  }`}
+                  title="Sincroniza nombres, capas y métricas sin alterar las curvas"
+                >
+                  <Link size={14} className="text-sky-400" />
+                  <span>Misma Identidad</span>
+                </button>
+              </div>
+              <p className="text-[10px] text-slate-400 pt-1 italic">
+                {combineObjectMode === 'merge_geometry' && "✨ Fusión Geométrica: Ambos objetos pasan a ser una sola figura SVG unificada (ej: Territorio + Isla) con opción de descombinar."}
+                {combineObjectMode === 'group_hierarchy' && "✨ Agrupar Padre: Los dos objetos quedan vinculados bajo un mismo grupo organizativo."}
+                {combineObjectMode === 'same_identity' && "✨ Misma Identidad: Sincroniza nombres y valores para que funcionen como el mismo territorio en las métricas."}
+              </p>
+            </div>
+
+            {/* Buscador de objeto destino */}
+            <div className="relative">
+              <Search size={14} className="absolute left-3 top-2.5 text-slate-400" />
+              <input
+                type="text"
+                value={combineObjectSearch}
+                onChange={(e) => setCombineObjectSearch(e.target.value)}
+                placeholder="Buscar trazado destino en el lienzo (ej: Argentina, Continente)..."
+                className="w-full bg-slate-950 border border-slate-800 focus:border-purple-500 rounded-xl py-2 pl-9 pr-4 text-xs text-slate-100 placeholder:text-slate-500 outline-none font-bold"
+              />
+            </div>
+
+            {/* Lista de objetos disponibles en el lienzo */}
+            <div className="max-h-48 overflow-y-auto space-y-1.5 pr-1">
+              {mapEntity.paths
+                .filter(p => p.id !== combineSourcePathId)
+                .filter(p => !combineObjectSearch || (p.name && p.name.toLowerCase().includes(combineObjectSearch.toLowerCase())) || p.id.toLowerCase().includes(combineObjectSearch.toLowerCase()))
+                .map(p => (
+                  <button
+                    key={p.id}
+                    type="button"
+                    onClick={() => setCombineTargetPathId(p.id)}
+                    className={`w-full p-2.5 rounded-xl border text-left flex items-center justify-between transition-all cursor-pointer ${
+                      combineTargetPathId === p.id
+                        ? 'bg-purple-500/20 text-purple-300 border-purple-500/50 font-bold shadow-sm'
+                        : 'bg-slate-950/60 hover:bg-slate-800/80 text-slate-300 border-slate-800'
+                    }`}
+                  >
+                    <div className="flex items-center space-x-2">
+                      <span className="w-3 h-3 rounded-full border border-slate-700 shrink-0" style={{ backgroundColor: p.customData?.fill || p.visualStyles?.fillColor || '#10b981' }} />
+                      <div className="truncate">
+                        <p className="text-xs font-bold truncate">{p.name || p.id}</p>
+                        <p className="text-[10px] text-slate-500 font-mono truncate">ID: {p.id}</p>
+                      </div>
+                    </div>
+                    {combineTargetPathId === p.id && (
+                      <span className="text-[10px] bg-purple-500 text-slate-950 px-2 py-0.5 rounded-full font-black shrink-0">
+                        Destino Seleccionado
+                      </span>
+                    )}
+                  </button>
+                ))}
+            </div>
+
+            {/* Botones de acción del modal */}
+            <div className="flex items-center justify-end space-x-2 border-t border-slate-800 pt-3">
+              <button
+                type="button"
+                onClick={() => setIsCombineObjectModalOpen(false)}
+                className="px-4 py-2 bg-slate-800 hover:bg-slate-700 text-slate-300 text-xs font-bold rounded-xl transition-all cursor-pointer"
+              >
+                Cancelar
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  if (!combineSourcePathId || !combineTargetPathId) {
+                    alert("Por favor selecciona el objeto destino con el cual combinar.");
+                    return;
+                  }
+                  handleCombineSpecificObjects(combineSourcePathId, combineTargetPathId, combineObjectMode);
+                }}
+                disabled={!combineTargetPathId || !combineSourcePathId}
+                className="px-4 py-2 bg-purple-600 hover:bg-purple-500 disabled:opacity-40 text-slate-950 font-black text-xs uppercase tracking-wider rounded-xl transition-all shadow-lg shadow-purple-950/50 flex items-center space-x-1.5 cursor-pointer"
+              >
+                <GitMerge size={14} />
+                <span>Confirmar Unión</span>
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* MODAL HISTORIAL VISUAL DE VERSIONES (ANTIGRAVITY TIMELINE CON PREVISUALIZACIÓN Y DIFF) */}
+      {isVisualHistoryModalOpen && (
+        <div className="fixed inset-0 bg-slate-950/85 backdrop-blur-md flex items-center justify-center p-4 z-50 animate-fadeIn">
+          <div className="bg-slate-900 border border-slate-800 rounded-3xl max-w-4xl w-full max-h-[90vh] flex flex-col shadow-2xl overflow-hidden">
+            {/* Cabecera del Historial */}
+            <div className="p-4 bg-slate-950 border-b border-slate-800 flex items-center justify-between">
+              <div className="flex items-center space-x-2.5">
+                <div className="p-2 bg-indigo-500/20 text-indigo-400 border border-indigo-500/30 rounded-xl">
+                  <History size={20} />
+                </div>
+                <div>
+                  <h3 className="text-sm font-black uppercase tracking-wider text-slate-100 flex items-center gap-2">
+                    <span>Historial Visual de Versiones</span>
+                    <span className="text-[10px] bg-indigo-500/20 text-indigo-300 border border-indigo-500/40 px-2 py-0.5 rounded-full font-bold">
+                      {historyStack.length} snapshots
+                    </span>
+                  </h3>
+                  <p className="text-xs text-slate-400">
+                    Inspecciona visualmente cómo estaba el mapa en cada modificación y decide si restaurar o bifurcar sin perder nada.
+                  </p>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => {
+                  setIsVisualHistoryModalOpen(false);
+                  setPreviewHistoryIndex(null);
+                }}
+                className="p-2 hover:bg-slate-800 text-slate-400 hover:text-slate-200 rounded-xl transition-colors cursor-pointer"
+              >
+                <X size={18} />
+              </button>
+            </div>
+
+            {/* Contenido Principal: Dos Columnas (Lista de Snapshots + Previsualizador SVG) */}
+            <div className="flex-1 flex flex-col md:flex-row overflow-hidden">
+              {/* Columna Izquierda: Línea de tiempo de snapshots */}
+              <div className="w-full md:w-80 bg-slate-950/70 border-r border-slate-800 flex flex-col overflow-y-auto p-3 space-y-2">
+                <span className="text-[10px] font-black uppercase tracking-widest text-slate-500 px-1">
+                  Línea de Tiempo (Snapshots)
+                </span>
+                
+                {historyStack.map((snap, idx) => {
+                  const isCurrent = idx === historyIndex;
+                  const isInspecting = (previewHistoryIndex ?? historyIndex) === idx;
+                  const pathCount = snap.paths?.length || 0;
+
+                  return (
+                    <div
+                      key={idx}
+                      onClick={() => setPreviewHistoryIndex(idx)}
+                      className={`p-3 rounded-2xl border transition-all cursor-pointer flex flex-col space-y-1.5 ${
+                        isInspecting
+                          ? 'bg-indigo-950/40 border-indigo-500/60 ring-1 ring-indigo-500/30'
+                          : 'bg-slate-900/60 hover:bg-slate-800/80 border-slate-800/80'
+                      }`}
+                    >
+                      <div className="flex items-center justify-between">
+                        <div className="flex items-center space-x-1.5">
+                          <span className={`w-2.5 h-2.5 rounded-full ${isCurrent ? 'bg-emerald-400' : 'bg-indigo-400'}`} />
+                          <span className="text-xs font-bold text-slate-200">
+                            {idx === 0 ? 'Estado Inicial' : `Snapshot #${idx}`}
+                          </span>
+                        </div>
+                        {isCurrent && (
+                          <span className="text-[9px] bg-emerald-500/20 text-emerald-300 border border-emerald-500/40 px-1.5 py-0.2 rounded-full font-black uppercase">
+                            Canvas Actual
+                          </span>
+                        )}
+                      </div>
+
+                      <div className="flex items-center justify-between text-[11px] text-slate-400">
+                        <span>{pathCount} polígonos</span>
+                        <span className="font-mono text-[10px] text-slate-500">
+                          {snap.updatedAt ? new Date(snap.updatedAt).toLocaleTimeString() : 'Guardado'}
+                        </span>
+                      </div>
+
+                      {/* Botón de Restaurar directo */}
+                      <div className="pt-1.5 flex items-center space-x-1.5 border-t border-slate-800/60">
+                        <button
+                          type="button"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            setHistoryIndex(idx);
+                            setMapEntity(JSON.parse(JSON.stringify(snap)));
+                            setIsVisualHistoryModalOpen(false);
+                            setPreviewHistoryIndex(null);
+                            showNotify(`[↩️] Restaurado al snapshot #${idx} (${pathCount} polígonos).`);
+                          }}
+                          className="flex-1 py-1 px-2 bg-indigo-600/30 hover:bg-indigo-600/50 text-indigo-200 border border-indigo-500/30 rounded-lg text-[10px] font-bold transition-all text-center flex items-center justify-center gap-1 cursor-pointer"
+                        >
+                          <RotateCcw size={10} />
+                          <span>Restaurar en Canvas</span>
+                        </button>
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+
+              {/* Columna Derecha: Visor y Comparador Gráfico */}
+              {(() => {
+                const targetIdx = previewHistoryIndex ?? historyIndex;
+                const inspectedSnapshot = historyStack[targetIdx] || mapEntity;
+                const inspectedPaths = inspectedSnapshot.paths || [];
+                const inspectedBBox = inspectedPaths.length > 0 ? getMultiplePathsBBox(inspectedPaths.map(p => ({ d: p.d }))) : { x: 0, y: 0, width: 800, height: 600 };
+                const pad = Math.max(25, Math.max(inspectedBBox.width, inspectedBBox.height) * 0.1);
+                const viewBoxStr = `${inspectedBBox.x - pad} ${inspectedBBox.y - pad} ${inspectedBBox.width + pad * 2} ${inspectedBBox.height + pad * 2}`;
+
+                return (
+                  <div className="flex-1 flex flex-col bg-slate-950 p-4 space-y-3 overflow-hidden">
+                    <div className="flex items-center justify-between">
+                      <div className="flex items-center space-x-2">
+                        <Eye size={14} className="text-indigo-400" />
+                        <span className="text-xs font-bold text-slate-200">
+                          Previsualización de: {targetIdx === 0 ? 'Estado Inicial' : `Snapshot #${targetIdx}`}
+                        </span>
+                        <span className="text-[11px] text-slate-500 font-mono">
+                          ({inspectedPaths.length} elementos vectoriales)
+                        </span>
+                      </div>
+
+                      <div className="flex items-center space-x-2">
+                        <button
+                          type="button"
+                          onClick={() => {
+                            downloadJsonBlob(JSON.stringify(inspectedSnapshot, null, 2), `version_snapshot_${targetIdx}.json`);
+                            showNotify(`[💾] Snapshot #${targetIdx} guardado como archivo independiente.`);
+                          }}
+                          className="px-2.5 py-1 bg-slate-800 hover:bg-slate-700 text-slate-300 border border-slate-700 rounded-lg text-xs font-bold transition-all flex items-center space-x-1 cursor-pointer"
+                          title="Descargar este punto específico de la historia como archivo JSON"
+                        >
+                          <Download size={12} />
+                          <span>Bifurcar / Guardar Copia</span>
+                        </button>
+                        
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setHistoryIndex(targetIdx);
+                            setMapEntity(JSON.parse(JSON.stringify(inspectedSnapshot)));
+                            setIsVisualHistoryModalOpen(false);
+                            setPreviewHistoryIndex(null);
+                            showNotify(`[✅] Aplicado snapshot #${targetIdx} al editor principal.`);
+                          }}
+                          className="px-3 py-1 bg-emerald-600 hover:bg-emerald-500 text-slate-950 rounded-lg text-xs font-black uppercase tracking-wider transition-all flex items-center space-x-1 cursor-pointer shadow-md shadow-emerald-950/40"
+                        >
+                          <Check size={12} />
+                          <span>Aplicar este Estado</span>
+                        </button>
+                      </div>
+                    </div>
+
+                    {/* Lienzo SVG en vivo de la versión seleccionada */}
+                    <div className="flex-1 bg-slate-900/60 border border-slate-800 rounded-2xl flex items-center justify-center p-3 relative overflow-hidden">
+                      <svg
+                        viewBox={viewBoxStr}
+                        className="w-full h-full max-h-[50vh] select-none"
+                      >
+                        {inspectedPaths.map(p => {
+                          const fill = p.customData?.fill || p.visualStyles?.fillColor || '#10b981';
+                          const stroke = p.customData?.stroke || p.visualStyles?.strokeColor || '#0f172a';
+                          return (
+                            <path
+                              key={p.id}
+                              d={p.d}
+                              vectorEffect="non-scaling-stroke"
+                              fill={fill}
+                              fillOpacity={0.8}
+                              stroke={stroke}
+                              strokeWidth={0.8}
+                            />
+                          );
+                        })}
+                      </svg>
+                    </div>
+                  </div>
+                );
+              })()}
+            </div>
+
+            {/* Pie del modal */}
+            <div className="p-3 bg-slate-950 border-t border-slate-800 flex items-center justify-between text-xs text-slate-400">
+              <span>Consejo: Puedes presionar <kbd className="bg-slate-800 px-1 py-0.5 rounded text-slate-300 font-mono">Ctrl+Z</kbd> o <kbd className="bg-slate-800 px-1 py-0.5 rounded text-slate-300 font-mono">Ctrl+Y</kbd> en cualquier momento para navegar los pasos.</span>
+              <button
+                type="button"
+                onClick={() => {
+                  setIsVisualHistoryModalOpen(false);
+                  setPreviewHistoryIndex(null);
+                }}
+                className="px-4 py-1.5 bg-slate-800 hover:bg-slate-700 text-slate-200 rounded-xl font-bold cursor-pointer transition-colors"
+              >
+                Cerrar Visor
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* MODAL PARA AGREGAR NUEVO ELEMENTO / TERRITORIO / MIEMBRO AL MAPA (SIN REEMPLAZAR NADA) */}
+      <AddElementModal
+        isOpen={isAddElementModalOpen}
+        onClose={() => setIsAddElementModalOpen(false)}
+        onAddPath={handleAddNewVectorPath}
+        existingPaths={mapEntity.paths}
+        currentContextName={selectedProvince?.name || mapEntity.title || 'Mapa Actual'}
+      />
+
+      {/* MODAL DE ADVERTENCIA VISUAL Y BLINDAJE DE SEGURIDAD ANTES DE APLICAR O GUARDAR CAMBIOS */}
+      <MapSafetyConfirmModal
+        isOpen={safetyModalConfig.isOpen}
+        onClose={() => setSafetyModalConfig(prev => ({ ...prev, isOpen: false }))}
+        targetId={safetyModalConfig.targetId}
+        targetName={safetyModalConfig.targetName}
+        targetCurrentD={safetyModalConfig.targetCurrentD}
+        targetPaths={safetyModalConfig.targetPaths}
+        proposedD={safetyModalConfig.proposedD}
+        proposedName={safetyModalConfig.proposedName}
+        proposedPaths={safetyModalConfig.proposedPaths}
+        operationType={safetyModalConfig.operationType}
+        onConfirmReplace={() => {
+          setSafetyModalConfig(prev => ({ ...prev, isOpen: false }));
+          safetyModalConfig.onConfirmReplace();
+        }}
+        onConfirmAsIndependent={safetyModalConfig.onConfirmAsIndependent ? () => {
+          setSafetyModalConfig(prev => ({ ...prev, isOpen: false }));
+          safetyModalConfig.onConfirmAsIndependent?.();
+        } : undefined}
+      />
     </div>
   );
 }

@@ -33,7 +33,8 @@ import {
   FilePlus, // Ícono de nuevo proyecto
   FolderOpen, // Ícono de abrir archivo/proyecto
   Save, // Ícono de disco/guardar
-  XCircle // Ícono de cerrar proyecto
+  XCircle, // Ícono de cerrar proyecto
+  Cloud // Ícono de nube / base de datos y drive
 } from 'lucide-react'; // Colección de íconos UI
 
 // IMPORTACIÓN DE TIPOS Y MODELOS DE DATOS DE TYPESCRIPT
@@ -68,6 +69,7 @@ interface HeaderProps {
   onSaveProject?: () => void; // Disparador para guardar cambios (in-place sobreescribir o guardar como)
   onSaveAsProject?: () => void; // Disparador para exportar o Guardar Como nuevo archivo JSON
   onCloseProject?: () => void; // Disparador para cerrar el proyecto activo y limpiar lienzo
+  onOpenDestinationsModal?: (initialTab?: 'save' | 'open_db' | 'open_drive' | 'open_disk' | 'conflict') => void; // Disparador para abrir el Centro de Persistencia
 } // Fin de HeaderProps
 
 // COMPONENTE HEADER: CABECERA PRINCIPAL CON NAVEGACIÓN, GESTIÓN DE PROYECTOS Y BARRA RBAC
@@ -90,7 +92,8 @@ export default function Header({
   onOpenProject, // Destructura onOpenProject
   onSaveProject, // Destructura onSaveProject
   onSaveAsProject, // Destructura onSaveAsProject
-  onCloseProject // Destructura onCloseProject
+  onCloseProject, // Destructura onCloseProject
+  onOpenDestinationsModal // Destructura onOpenDestinationsModal
 }: HeaderProps) { // Firma del componente Header
 
   // ESTADO PARA GESTIONAR LA EXPORTACIÓN DE REPORTES (PDF O EXCEL)
@@ -319,6 +322,19 @@ export default function Header({
             <Download size={13} className="text-purple-400" />
             <span className="hidden sm:inline">Guardar Como...</span>
           </button>
+
+          {/* Botón ☁️ / 🗄️ Persistencia Multidestino: Base de Datos y Drive */}
+          {onOpenDestinationsModal && (
+            <button
+              type="button"
+              onClick={() => onOpenDestinationsModal('save')}
+              className="px-2.5 py-1 bg-slate-800 hover:bg-emerald-950/80 text-emerald-300 hover:text-emerald-200 rounded-xl text-[11px] font-bold transition-all cursor-pointer flex items-center space-x-1 border border-slate-700/80 hover:border-emerald-700/80"
+              title="Centro de Persistencia: Guardar y sincronizar en Base de Datos (Cloud SQL), Drive y Disco (🗄️)"
+            >
+              <Cloud size={13} className="text-emerald-400" />
+              <span className="hidden lg:inline">BD / Nube</span>
+            </button>
+          )}
 
           {/* Botón ❌ Cerrar Proyecto */}
           <button

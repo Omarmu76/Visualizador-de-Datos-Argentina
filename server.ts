@@ -3,7 +3,7 @@ import path from 'path';
 import { createServer as createViteServer } from 'vite';
 import { adminAuth } from './src/lib/firebase-admin.ts';
 import { getDb } from './src/db/index.ts';
-import { users, provinceCustomizations, geoNodes } from './src/db/schema.ts';
+import { users, provinceCustomizations, geoNodes, projects } from './src/db/schema.ts';
 import { eq } from 'drizzle-orm';
 // Importamos el SDK oficial de Google GenAI para interactuar con Gemini en el servidor
 import { GoogleGenAI, Type } from '@google/genai';
@@ -31,22 +31,26 @@ async function startServer() {
       const userId = decodedToken.uid;
       const email = decodedToken.email || '';
 
-      const db = getDb();
-      // Check if user already exists
-      const existing = await db.select().from(users).where(eq(users.id, userId)).limit(1);
+      try {
+        const db = getDb();
+        // Check if user already exists
+        const existing = await db.select().from(users).where(eq(users.id, userId)).limit(1);
 
-      if (existing.length === 0) {
-        await db.insert(users).values({
-          id: userId,
-          email: email,
-        });
-        console.log(`Created new Cloud SQL user record: ${userId} (${email})`);
+        if (existing.length === 0) {
+          await db.insert(users).values({
+            id: userId,
+            email: email,
+          });
+          console.log(`Created new Cloud SQL user record: ${userId} (${email})`);
+        }
+      } catch (dbErr: any) {
+        console.warn('Aviso: Cloud SQL no disponible en sincronización de usuario (usando fallback local):', dbErr.message);
       }
 
       res.json({ success: true, user: { id: userId, email } });
     } catch (err: any) {
-      console.error('Error syncing auth with Cloud SQL:', err);
-      res.status(500).json({ error: err.message });
+      console.error('Error verifying auth token:', err);
+      res.status(401).json({ error: err.message });
     }
   });
 
@@ -63,16 +67,21 @@ async function startServer() {
       const decodedToken = await adminAuth.verifyIdToken(token);
       const userId = decodedToken.uid;
 
-      const db = getDb();
-      const list = await db
-        .select()
-        .from(provinceCustomizations)
-        .where(eq(provinceCustomizations.userId, userId));
+      try {
+        const db = getDb();
+        const list = await db
+          .select()
+          .from(provinceCustomizations)
+          .where(eq(provinceCustomizations.userId, userId));
 
-      res.json(list);
+        res.json(list);
+      } catch (dbErr: any) {
+        console.warn('Aviso: Cloud SQL no disponible para /api/customizations (usando fallback local):', dbErr.message);
+        res.json([]);
+      }
     } catch (err: any) {
-      console.error('Error fetching customizations from Cloud SQL:', err);
-      res.status(500).json({ error: err.message });
+      console.error('Error verifying auth token for customizations:', err);
+      res.status(401).json({ error: err.message });
     }
   });
 
@@ -95,36 +104,40 @@ async function startServer() {
         return;
       }
 
-      const db = getDb();
-      const customizationId = `${userId}_${provinceId}`;
+      try {
+        const db = getDb();
+        const customizationId = `${userId}_${provinceId}`;
 
-      const existing = await db
-        .select()
-        .from(provinceCustomizations)
-        .where(eq(provinceCustomizations.id, customizationId))
-        .limit(1);
+        const existing = await db
+          .select()
+          .from(provinceCustomizations)
+          .where(eq(provinceCustomizations.id, customizationId))
+          .limit(1);
 
-      if (existing.length > 0) {
-        await db
-          .update(provinceCustomizations)
-          .set({
+        if (existing.length > 0) {
+          await db
+            .update(provinceCustomizations)
+            .set({
+              customData: customData,
+              updatedAt: new Date(),
+            })
+            .where(eq(provinceCustomizations.id, customizationId));
+        } else {
+          await db.insert(provinceCustomizations).values({
+            id: customizationId,
+            userId: userId,
+            provinceId: provinceId,
             customData: customData,
-            updatedAt: new Date(),
-          })
-          .where(eq(provinceCustomizations.id, customizationId));
-      } else {
-        await db.insert(provinceCustomizations).values({
-          id: customizationId,
-          userId: userId,
-          provinceId: provinceId,
-          customData: customData,
-        });
+          });
+        }
+      } catch (dbErr: any) {
+        console.warn('Aviso: Cloud SQL no disponible para guardar personalización (guardado local):', dbErr.message);
       }
 
       res.json({ success: true });
     } catch (err: any) {
-      console.error('Error saving customization to Cloud SQL:', err);
-      res.status(500).json({ error: err.message });
+      console.error('Error verifying auth token for saving customization:', err);
+      res.status(401).json({ error: err.message });
     }
   });
 
@@ -201,8 +214,8 @@ async function startServer() {
 
       res.json({ success: true, id: node.id }); // Retorna respuesta exitosa
     } catch (err: any) {
-      console.error('Error al guardar nodo en Cloud SQL:', err);
-      res.status(500).json({ error: err.message });
+      console.warn('Aviso: Cloud SQL no disponible al guardar nodo (usando almacenamiento local):', err.message);
+      res.json({ success: true, id: req.body?.id, localOnly: true });
     }
   });
 
@@ -234,8 +247,8 @@ async function startServer() {
 
       res.json({ success: true, id: nodeId }); // Responde confirmando
     } catch (err: any) {
-      console.error('Error al actualizar nodo en Cloud SQL:', err);
-      res.status(500).json({ error: err.message });
+      console.warn('Aviso: Cloud SQL no disponible al actualizar nodo (usando almacenamiento local):', err.message);
+      res.json({ success: true, id: req.params.id, localOnly: true });
     }
   });
 
@@ -284,8 +297,8 @@ async function startServer() {
 
       res.json({ success: true, count: nodes.length }); // Retorna la cantidad guardada
     } catch (err: any) {
-      console.error('Error al guardar lote de nodos en Cloud SQL:', err);
-      res.status(500).json({ error: err.message });
+      console.warn('Aviso: Cloud SQL no disponible al guardar lote de nodos en batch (usando almacenamiento local):', err.message);
+      res.json({ success: true, count: req.body?.nodes?.length || 0, localOnly: true });
     }
   });
 
@@ -297,7 +310,228 @@ async function startServer() {
       await db.delete(geoNodes).where(eq(geoNodes.id, nodeId)); // Ejecuta DELETE en geoNodes
       res.json({ success: true, deletedId: nodeId }); // Responde confirmación
     } catch (err: any) {
-      console.error('Error al eliminar nodo en Cloud SQL:', err);
+      console.warn('Aviso: Cloud SQL no disponible al eliminar nodo (usando almacenamiento local):', err.message);
+      res.json({ success: true, deletedId: req.params.id, localOnly: true });
+    }
+  });
+
+  // ============================================================================
+  // ENDPOINTS DE PROYECTOS Y PERSISTENCIA DE MAPAS (Cloud SQL + Respaldo de Servidor)
+  // ============================================================================
+
+  // Almacén en memoria de respaldo del servidor para proyectos si la base de datos no está disponible
+  const serverProjectsBackup = new Map<string, any>();
+
+  // Endpoint GET /api/projects: Obtiene la lista de proyectos guardados en la BD
+  app.get('/api/projects', async (_req, res) => {
+    try {
+      const db = getDb(); // Obtiene la instancia de la base de datos
+      const result = await db.select().from(projects); // Consulta todos los proyectos en la tabla
+      // Mapea los proyectos recuperados
+      const projectList = result.map(p => ({
+        id: p.id,
+        name: p.name,
+        description: p.description,
+        category: p.category,
+        activeLevel: p.activeLevel,
+        payload: p.payload,
+        isPublic: p.isPublic === 'true',
+        createdAt: p.createdAt,
+        updatedAt: p.updatedAt
+      }));
+      res.json(projectList); // Retorna los proyectos de Cloud SQL
+    } catch (err: any) {
+      console.warn('Base de datos Cloud SQL no disponible para /api/projects. Usando almacén en memoria:', err.message);
+      // Fallback a los proyectos almacenados en memoria del servidor
+      const fallbackList = Array.from(serverProjectsBackup.values());
+      res.json(fallbackList);
+    }
+  });
+
+  // Endpoint GET /api/projects/:id: Obtiene un proyecto específico por su ID
+  app.get('/api/projects/:id', async (req, res) => {
+    const projectId = req.params.id;
+    try {
+      const db = getDb();
+      const result = await db.select().from(projects).where(eq(projects.id, projectId)).limit(1);
+      if (result.length > 0) {
+        const p = result[0];
+        res.json({
+          id: p.id,
+          name: p.name,
+          description: p.description,
+          category: p.category,
+          activeLevel: p.activeLevel,
+          payload: p.payload,
+          isPublic: p.isPublic === 'true',
+          createdAt: p.createdAt,
+          updatedAt: p.updatedAt
+        });
+        return;
+      }
+    } catch (err: any) {
+      console.warn('Error al buscar proyecto en Cloud SQL:', err.message);
+    }
+
+    // Fallback de memoria
+    if (serverProjectsBackup.has(projectId)) {
+      res.json(serverProjectsBackup.get(projectId));
+    } else {
+      res.status(404).json({ error: 'Proyecto no encontrado' });
+    }
+  });
+
+  // Endpoint POST /api/projects: Crea o guarda un nuevo proyecto en la base de datos
+  app.post('/api/projects', async (req, res) => {
+    try {
+      const { id, name, description, category, activeLevel, payload, isPublic, userId } = req.body;
+      if (!name || !payload) {
+        res.status(400).json({ error: 'Faltan campos obligatorios (name, payload)' });
+        return;
+      }
+
+      const projectId = id || `proj_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+      const now = new Date();
+
+      const projectRecord = {
+        id: projectId,
+        userId: userId || 'system',
+        name: name,
+        description: description || '',
+        category: category || 'cartografia',
+        activeLevel: activeLevel || 'country',
+        payload: payload,
+        isPublic: isPublic !== undefined ? String(isPublic) : 'true',
+        createdAt: now,
+        updatedAt: now
+      };
+
+      // Guarda siempre en el respaldo en memoria del servidor
+      serverProjectsBackup.set(projectId, {
+        ...projectRecord,
+        isPublic: isPublic !== false
+      });
+
+      // Intenta guardar en Cloud SQL
+      try {
+        const db = getDb();
+        const existing = await db.select().from(projects).where(eq(projects.id, projectId)).limit(1);
+        if (existing.length > 0) {
+          // Si ya existía, realiza actualización in-place
+          await db.update(projects).set({
+            name: name,
+            description: description || '',
+            category: category || 'cartografia',
+            activeLevel: activeLevel || 'country',
+            payload: payload,
+            isPublic: isPublic !== undefined ? String(isPublic) : 'true',
+            updatedAt: now
+          }).where(eq(projects.id, projectId));
+        } else {
+          // Si es nuevo, inserta
+          await db.insert(projects).values(projectRecord);
+        }
+        console.log(`Proyecto "${name}" guardado exitosamente en Cloud SQL (${projectId})`);
+      } catch (dbErr: any) {
+        console.warn('No se pudo persistir proyecto en Cloud SQL (guardado en memoria y local):', dbErr.message);
+      }
+
+      res.json({
+        success: true,
+        id: projectId,
+        name: name,
+        updatedAt: now.toISOString()
+      });
+    } catch (err: any) {
+      console.error('Error al procesar guardado de proyecto:', err);
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  // Endpoint PUT /api/projects/:id: Actualiza in-place el proyecto actual sin crear duplicados
+  app.put('/api/projects/:id', async (req, res) => {
+    try {
+      const projectId = req.params.id;
+      const { name, description, category, activeLevel, payload, isPublic, userId } = req.body;
+      const now = new Date();
+
+      // Actualiza en memoria de servidor
+      const existingMem = serverProjectsBackup.get(projectId) || {};
+      const updatedMem = {
+        ...existingMem,
+        id: projectId,
+        name: name || existingMem.name || 'Proyecto Actualizado',
+        description: description !== undefined ? description : existingMem.description,
+        category: category || existingMem.category || 'cartografia',
+        activeLevel: activeLevel || existingMem.activeLevel || 'country',
+        payload: payload || existingMem.payload,
+        isPublic: isPublic !== undefined ? isPublic : existingMem.isPublic,
+        userId: userId || existingMem.userId || 'system',
+        updatedAt: now
+      };
+      serverProjectsBackup.set(projectId, updatedMem);
+
+      // Intenta actualizar en Cloud SQL
+      try {
+        const db = getDb();
+        const existing = await db.select().from(projects).where(eq(projects.id, projectId)).limit(1);
+        if (existing.length > 0) {
+          await db.update(projects).set({
+            name: name || existing[0].name,
+            description: description !== undefined ? description : existing[0].description,
+            category: category || existing[0].category,
+            activeLevel: activeLevel || existing[0].activeLevel,
+            payload: payload || existing[0].payload,
+            isPublic: isPublic !== undefined ? String(isPublic) : existing[0].isPublic,
+            updatedAt: now
+          }).where(eq(projects.id, projectId));
+        } else {
+          await db.insert(projects).values({
+            id: projectId,
+            userId: userId || 'system',
+            name: name || 'Proyecto',
+            description: description || '',
+            category: category || 'cartografia',
+            activeLevel: activeLevel || 'country',
+            payload: payload || {},
+            isPublic: isPublic !== undefined ? String(isPublic) : 'true',
+            createdAt: now,
+            updatedAt: now
+          });
+        }
+        console.log(`Proyecto ${projectId} actualizado in-place en Cloud SQL`);
+      } catch (dbErr: any) {
+        console.warn('No se pudo actualizar proyecto en Cloud SQL (actualizado en memoria):', dbErr.message);
+      }
+
+      res.json({
+        success: true,
+        id: projectId,
+        name: updatedMem.name,
+        updatedAt: now.toISOString()
+      });
+    } catch (err: any) {
+      console.error('Error al actualizar proyecto in-place:', err);
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  // Endpoint DELETE /api/projects/:id: Elimina un proyecto de la base de datos
+  app.delete('/api/projects/:id', async (req, res) => {
+    try {
+      const projectId = req.params.id;
+      serverProjectsBackup.delete(projectId);
+
+      try {
+        const db = getDb();
+        await db.delete(projects).where(eq(projects.id, projectId));
+      } catch (dbErr: any) {
+        console.warn('Error al eliminar proyecto de Cloud SQL:', dbErr.message);
+      }
+
+      res.json({ success: true, deletedId: projectId });
+    } catch (err: any) {
+      console.error('Error al eliminar proyecto:', err);
       res.status(500).json({ error: err.message });
     }
   });

@@ -4,7 +4,7 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import React, { useState, useEffect, useMemo } from 'react';
+import React, { useState, useEffect, useMemo, useRef } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
 import { 
   MapPin, 
@@ -35,13 +35,26 @@ import {
   Filter,
   Maximize2,
   Target,
-  Hand
+  Hand,
+  Move,
+  CheckCheck,
+  RotateCcw,
+  Save,
+  Maximize,
+  Minimize,
+  ArrowUp,
+  ArrowDown,
+  ArrowLeft,
+  ArrowRight,
+  Lock,
+  Unlock
 } from 'lucide-react'; // Importación de íconos vectoriales para la interfaz interactiva
 import { provincePaths } from '../data/provincePaths'; // Importación de los trazos vectoriales de las provincias argentinas
+import { defaultWorldVectorMap, repairAndRestoreWorldMap } from '../data/defaultWorldMap'; // Importación de moldes vectoriales mundiales y motor de restauración pura
 import { MetricType, ProvinceData, MunicipalityData, RegionNode, NavNode, DashboardConfig } from '../types'; // Importación del modelo de tipos de datos y nodos universales
 import { mockProvincesData } from '../data/mockData'; // Importación de datos mock de provincias
-import { getPathBBox, getMultiplePathsBBox } from '../lib/mapUtils'; // Helper para cálculo de cajas límite Bounding Box
-import { safeGetItem } from '../lib/storage'; // Utilidad para lectura segura protegida contra excepciones
+import { getPathBBox, getMultiplePathsBBox, translatePathD, scalePathD } from '../lib/mapUtils'; // Helper para cálculo de cajas límite Bounding Box y transformaciones geométricas
+import { safeGetItem, safeSetItem } from '../lib/storage'; // Utilidad para lectura y escritura segura protegida contra excepciones
 import AdminDashboardBuilder, { defaultDashboardConfig } from './AdminDashboardBuilder'; // Importación del constructor de dashboards y paletas dinámicas
 
 // Función auxiliar para calcular interpolación lineal entre dos colores Hex (#RRGGBB)
@@ -87,6 +100,7 @@ interface InteractiveMapProps {
   navPath?: NavNode[]; // Historial de navegación dinámico universal (Motor Vectorial)
   goBackToNode?: (index: number) => void; // Manejador para retroceder en las migas universales
   onNavigateToNode?: (node: NavNode) => void; // Manejador para avanzar jerárquicamente a un nuevo nodo
+  onRestoreWorldMap?: () => void; // Función para restaurar el mapa mundial completo sin alterar Argentina
 }
 
 export default function InteractiveMap({
@@ -104,7 +118,8 @@ export default function InteractiveMap({
   onBreadcrumbClick,
   navPath = [], // Prop de historial de navegación dinámico con valor por defecto
   goBackToNode, // Manejador para retroceder en la jerarquía universal
-  onNavigateToNode // Manejador para profundizar a un nodo hijo
+  onNavigateToNode, // Manejador para profundizar a un nodo hijo
+  onRestoreWorldMap // Manejador para recuperar mapa mundial original
 }: InteractiveMapProps) {
   const [hoveredProv, setHoveredProv] = useState<string | null>(null); // Estado de provincia en hover
   const [zoomLevel, setZoomLevel] = useState(1); // Estado de nivel de zoom del lienzo
@@ -113,6 +128,59 @@ export default function InteractiveMap({
   const [isDraggingCanvas, setIsDraggingCanvas] = useState<boolean>(false); // Indica si el usuario está arrastrando el lienzo con el ratón
   const [dragStartPos, setDragStartPos] = useState<{ x: number; y: number }>({ x: 0, y: 0 }); // Posición inicial del cursor durante el arrastre
   const [hoveredMuni, setHoveredMuni] = useState<string | null>(null); // Estado de subdivisión en hover
+
+  // Referencia al contenedor envoltorio del mapa SVG para observación dinámica de redimensión
+  const mapWrapperRef = useRef<HTMLDivElement>(null);
+
+  // Estado para bloquear o permitir el auto-ajuste y redimensionamiento dinámico del mapa al mover paneles
+  const [isResizeLocked, setIsResizeLocked] = useState<boolean>(() => {
+    return safeGetItem('map_lock_resize') === 'true'; // Recupera el estado guardado o por defecto desbloqueado (auto-ajuste activo)
+  });
+
+  // Función para alternar el bloqueo de redimensión del mapa interactivo
+  const toggleLockResize = (locked?: boolean) => {
+    const nextVal = locked !== undefined ? locked : !isResizeLocked;
+    setIsResizeLocked(nextVal);
+    safeSetItem('map_lock_resize', String(nextVal)); // Persiste la preferencia en almacenamiento local
+    if (!nextVal) {
+      // Al activar el auto-ajuste (desbloquear), auto-centra suavemente para que todo el dibujo sea visible
+      setZoomLevel(1);
+      setPanOffset({ x: 0, y: 0 });
+      showMacroToast('🔓 Auto-Ajuste Activado: El mapa se redimensiona automáticamente al ajustar los paneles.');
+    } else {
+      showMacroToast('🔒 Bloqueo de Tamaño Activado: Se mantiene fija la escala y tamaño del dibujo actual.');
+    }
+  };
+
+  // RESIZEOBSERVER PARA EL CONTENEDOR DEL MAPA: Adapta el encuadre en tiempo real al arrastrar paneles o cambiar pantalla
+  useEffect(() => {
+    const wrapper = mapWrapperRef.current;
+    if (!wrapper) return;
+
+    let resizeDebounceTimer: any = null;
+    const resizeObserver = new ResizeObserver((entries) => {
+      for (const entry of entries) {
+        const { width, height } = entry.contentRect;
+        if (width > 0 && height > 0) {
+          // Si el auto-ajuste está activo (no bloqueado) y el usuario está en zoom base, mantiene el centrado óptimo
+          if (!isResizeLocked) {
+            clearTimeout(resizeDebounceTimer);
+            resizeDebounceTimer = setTimeout(() => {
+              if (zoomLevel <= 1.05) {
+                setPanOffset({ x: 0, y: 0 });
+              }
+            }, 50);
+          }
+        }
+      }
+    });
+
+    resizeObserver.observe(wrapper); // Inicia la observación activa sobre el contenedor
+    return () => {
+      clearTimeout(resizeDebounceTimer);
+      resizeObserver.disconnect(); // Limpieza del observador
+    };
+  }, [isResizeLocked, zoomLevel]);
 
   // EFECTO DE ARRASTRE GLOBAL EN 360° PARA LA HERRAMIENTA MANITO EN EL MAPA INTERACTIVO
   useEffect(() => {
@@ -260,19 +328,305 @@ export default function InteractiveMap({
     return safeGetItem('argentina_paths_last_updated') || ''; // Carga segura de marca temporal
   });
 
+  // ESTADO PARA MODO DE ASOCIACIÓN DIRECTA POR CLIC EN EL MAPA
+  const [directAssociateSource, setDirectAssociateSource] = useState<{
+    pathId: string;
+    name: string;
+    d: string;
+    fill?: string;
+    customData?: any;
+  } | null>(() => {
+    try {
+      const saved = sessionStorage.getItem('argentina_direct_associate_source');
+      return saved ? JSON.parse(saved) : null;
+    } catch (e) {
+      return null;
+    }
+  });
+
+  // Oyente global para iniciar o cancelar el modo de asociación directa al clic
+  useEffect(() => {
+    const handleStartAssociate = (e: any) => {
+      if (e.detail) {
+        setDirectAssociateSource(e.detail);
+        sessionStorage.setItem('argentina_direct_associate_source', JSON.stringify(e.detail));
+        showMacroToast(`🎯 Modo Unir Activo: Haz clic en cualquier país o provincia del mapa (ej: Argentina) para asociar "${e.detail.name}".`);
+      }
+    };
+
+    const handleCancelAssociate = () => {
+      setDirectAssociateSource(null);
+      sessionStorage.removeItem('argentina_direct_associate_source');
+    };
+
+    window.addEventListener('start_direct_associate_map', handleStartAssociate);
+    window.addEventListener('cancel_direct_associate_map', handleCancelAssociate);
+
+    return () => {
+      window.removeEventListener('start_direct_associate_map', handleStartAssociate);
+      window.removeEventListener('cancel_direct_associate_map', handleCancelAssociate);
+    };
+  }, []);
+
+  // FUNCIÓN PARA EJECUTAR LA ASOCIACIÓN DIRECTA INMEDIATA AL HACER CLIC EN EL TERRITORIO DEL MAPA
+  const handlePerformDirectAssociate = (targetId: string, targetName: string) => {
+    if (!directAssociateSource) return;
+
+    const source = directAssociateSource;
+    const finalName = source.name || `${targetName} - Parte`;
+
+    // 1. Prepara el nuevo objeto o municipio
+    const newMuni = {
+      id: source.pathId || `PART_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`,
+      name: finalName,
+      value: source.customData?.valor || source.customData?.value || 30,
+      percentage: source.customData?.porcentaje || source.customData?.percentage || 10,
+      d: source.d,
+      color: source.fill || '#10b981',
+      layer: targetName,
+      visualStyles: {
+        fillColor: source.fill || '#10b981',
+        strokeColor: '#0f172a',
+        strokeWidth: 1.5
+      },
+      customData: {
+        ...(source.customData || {}),
+        associatedToRoute: targetId,
+        associatedAt: new Date().toISOString()
+      }
+    };
+
+    // 2. Actualiza la lista calibrada de paths del mapa nacional para que la silueta aparezca inmediatamente en el mapa
+    let currentCalibrated: Array<{ id: string; name?: string; d: string }> = [];
+    const rawCalibrated = safeGetItem('argentina_calibrated_map_paths');
+    if (rawCalibrated) {
+      try {
+        const parsed = JSON.parse(rawCalibrated);
+        if (Array.isArray(parsed)) {
+          currentCalibrated = parsed;
+        }
+      } catch (e) {
+        console.error('Error al leer argentina_calibrated_map_paths:', e);
+      }
+    }
+    if (currentCalibrated.length === 0) {
+      currentCalibrated = provincePaths.map(p => ({ id: p.id, name: p.name, d: p.d }));
+    }
+
+    // Detecta si es Islas Malvinas o un territorio específico
+    const isMalvinas = (source.name && source.name.toLowerCase().includes('malvin')) ||
+                       (source.pathId && source.pathId.toLowerCase().includes('malvin')) ||
+                       targetId === 'AR-MLV' || targetId.toLowerCase().includes('malvin');
+
+    if (isMalvinas) {
+      const mlvIdx = currentCalibrated.findIndex(p => p.id === 'AR-MLV' || (p.name && p.name.toLowerCase().includes('malvin')));
+      if (mlvIdx !== -1) {
+        currentCalibrated[mlvIdx].d = source.d;
+        currentCalibrated[mlvIdx].name = source.name || 'Islas Malvinas';
+      } else {
+        currentCalibrated.push({ id: 'AR-MLV', name: source.name || 'Islas Malvinas', d: source.d });
+      }
+    } else if (targetId === 'country' || targetId === 'AR' || targetId === 'WORLD_MAP') {
+      // Agrega como territorio/isla adicional al país o mundo
+      const existingIdx = currentCalibrated.findIndex(p => p.id === source.pathId);
+      if (existingIdx !== -1) {
+        currentCalibrated[existingIdx].d = source.d;
+        currentCalibrated[existingIdx].name = source.name;
+      } else {
+        currentCalibrated.push({
+          id: source.pathId || `TERR_${Date.now()}`,
+          name: source.name,
+          d: source.d
+        });
+      }
+    } else {
+      // Si el objetivo es una provincia específica (ej: AR-V, AR-B, etc.)
+      const provIdx = currentCalibrated.findIndex(p => p.id === targetId);
+      if (provIdx !== -1) {
+        if (source.pathId === targetId) {
+          currentCalibrated[provIdx].d = source.d;
+        } else {
+          // Fusiona multi-path en la provincia destino
+          currentCalibrated[provIdx].d = `${currentCalibrated[provIdx].d.trim()} ${source.d.trim()}`;
+        }
+      } else {
+        currentCalibrated.push({
+          id: source.pathId || targetId,
+          name: source.name || targetName,
+          d: source.d
+        });
+      }
+    }
+
+    // Guarda en almacenamiento calibrado y actualiza timestamp reactivo
+    safeSetItem('argentina_calibrated_map_paths', JSON.stringify(currentCalibrated));
+    const nowTimestamp = Date.now().toString();
+    safeSetItem('argentina_paths_last_updated', nowTimestamp);
+    setCalibratedPathsTimestamp(nowTimestamp);
+
+    // 3. Carga los municipios existentes de la ruta/provincia destino
+    let existingMuni: any[] = [];
+    const savedTarget = safeGetItem(`argentina_advanced_canvas_map_${targetId}`);
+    if (savedTarget) {
+      try {
+        const parsed = JSON.parse(savedTarget);
+        if (parsed && Array.isArray(parsed.paths)) {
+          existingMuni = parsed.paths.map((p: any) => ({
+            id: p.id,
+            name: p.name,
+            value: p.customData?.valor || p.customData?.value || 0,
+            percentage: p.customData?.porcentaje || p.customData?.percentage || 0,
+            d: p.d,
+            color: p.customData?.fill || p.visualStyles?.fillColor || p.fill,
+            layer: p.category || targetName,
+            visualStyles: p.visualStyles || {},
+            customData: p.customData || {}
+          }));
+        }
+      } catch (e) {}
+    }
+
+    const targetProv = mockProvincesData[targetId];
+    if (existingMuni.length === 0) {
+      if (targetProv && targetProv.municipalities) {
+        existingMuni = [...targetProv.municipalities];
+      }
+    }
+
+    // PROTECCIÓN CRÍTICA DE MUNDO: Si el destino es Mundo y la lista está vacía o tenía solo 1 elemento,
+    // inyecta toda la colección de continentes y países del mundo para nunca borrar el mapa mundial
+    if ((targetId === 'world' || targetId === 'WORLD_MAP' || targetId === 'mundo') && existingMuni.length <= 1) {
+      existingMuni = defaultWorldVectorMap.map(c => ({
+        id: c.id,
+        name: c.name,
+        value: c.value,
+        percentage: c.percentage,
+        d: c.d,
+        color: c.color,
+        layer: c.category,
+        visualStyles: { fillColor: c.color, strokeColor: '#0f172a', strokeWidth: 1.2 },
+        customData: { valor: c.value, porcentaje: c.percentage, fill: c.color, region: c.category }
+      }));
+    }
+
+    // Combina agregando el nuevo trazo sin destruir los demás países o provincias
+    const filtered = existingMuni.filter(m => m.id !== newMuni.id);
+    const updatedMunicipalities = [...filtered, newMuni];
+
+    const updatedProvinceData: ProvinceData = {
+      ...(targetProv || {}),
+      id: targetId,
+      name: targetName,
+      abbreviation: targetProv?.abbreviation || targetId.toUpperCase(),
+      municipalities: updatedMunicipalities,
+      economicProfile: targetProv?.economicProfile || {
+        gini: 0.42,
+        pib: "$0 M",
+        averageSalary: "$0",
+        sectors: [{ name: 'General', value: 100, color: '#10b981' }]
+      },
+      socialEmployment: targetProv?.socialEmployment || {
+        pobreza: 35,
+        desempleo: 7,
+        informalEmployment: 40,
+        youthInformality: 50
+      },
+      incomeStructure: targetProv?.incomeStructure || {
+        minimumSalary: [{ label: 'Salario Base', value: 100 }],
+        genderGap: [{ label: 'Brecha', value: 10 }]
+      },
+      connectivity: targetProv?.connectivity || {
+        internetAccess: [{ label: 'Fibra', value: 70 }],
+        mobileLines: [{ label: '4G/5G', value: 85 }]
+      },
+      budgetSpending: targetProv?.budgetSpending || {
+        socialSpending: [{ name: 'Gasto Social', value: 60, color: '#3b82f6' }],
+        educationInvestment: [{ label: 'Educación', value: 20 }]
+      },
+      mobilityServices: targetProv?.mobilityServices || {
+        roadNetwork: 'Red Vial Principal',
+        waterAccess: 90,
+        publicTransportLines: 15
+      }
+    };
+
+    if (onUpdateProvince) {
+      onUpdateProvince(updatedProvinceData);
+    }
+
+    // Guarda en almacenamiento persistente del mapa
+    const serialized = JSON.stringify({
+      id: targetId,
+      name: targetName,
+      paths: updatedMunicipalities.map(m => ({
+        id: m.id,
+        name: m.name,
+        d: m.d,
+        category: targetName,
+        visualStyles: m.visualStyles,
+        customData: m.customData
+      })),
+      updatedAt: new Date().toISOString()
+    });
+    safeSetItem(`argentina_advanced_canvas_map_${targetId}`, serialized);
+
+    // Limpia el estado de asociación
+    setDirectAssociateSource(null);
+    sessionStorage.removeItem('argentina_direct_associate_source');
+    window.dispatchEvent(new CustomEvent('direct_associate_completed', { detail: { targetId, targetName, source } }));
+
+    showMacroToast(`[✨] ¡Trazado "${finalName}" asociado y combinado con éxito a "${targetName}" (${targetId})!`);
+  };
+
+  // ESTADO DE MODO DE EDICIÓN / CALIBRACIÓN MACRO EN EL MAPA GENERAL (ÍNDICE DE RUTA)
+  const [mapMacroMode, setMapMacroMode] = useState<'select' | 'move' | 'resize'>('select'); // Modo 'select' normal, 'move' para mover y soltar, 'resize' para redimensionar
+  const [macroModifiedPaths, setMacroModifiedPaths] = useState<Record<string, string>>({}); // Almacena temporalmente los trazados SVG modificados en tiempo real
+  const [hasMacroPendingChanges, setHasMacroPendingChanges] = useState<boolean>(false); // Bandera indicadora de cambios no aplicados
+  const [macroFeedbackToast, setMacroFeedbackToast] = useState<string | null>(null); // Mensaje emergente de notificación visual
+
+  // Oyente global de sincronización para cambios de geometrías aplicadas en el sistema
+  useEffect(() => {
+    const handlePathsUpdated = () => {
+      setCalibratedPathsTimestamp(Date.now().toString()); // Actualiza la marca temporal para refrescar la carga de rutas
+    };
+    window.addEventListener('argentina_paths_updated', handlePathsUpdated); // Registra el oyente del evento
+    return () => window.removeEventListener('argentina_paths_updated', handlePathsUpdated); // Limpieza de suscripción
+  }, []);
+
+  // Función para mostrar notificación temporal en pantalla
+  const showMacroToast = (msg: string) => {
+    setMacroFeedbackToast(msg);
+    setTimeout(() => {
+      setMacroFeedbackToast(null);
+    }, 4500);
+  };
+
+  // Carga las rutas calibradas desde el almacenamiento local o usa las rutas base por defecto
   const activeProvincePaths = React.useMemo(() => {
     const saved = safeGetItem('argentina_calibrated_map_paths'); // Carga segura de rutas calibradas
     if (saved) {
       try {
-        const parsed = JSON.parse(saved) as { id: string; d: string }[];
+        const parsed = JSON.parse(saved) as Array<{ id: string; d: string; name?: string }>;
         if (Array.isArray(parsed)) {
-          const pathMap = new Map(parsed.map(item => [item.id, item.d]));
-          return provincePaths.map(p => {
+          const pathMap = new Map(parsed.map(item => [item.id, item]));
+          // 1. Provincias base actualizadas
+          const baseUpdated = provincePaths.map(p => {
             if (pathMap.has(p.id)) {
-              return { ...p, d: pathMap.get(p.id)! };
+              const item = pathMap.get(p.id)!;
+              return { ...p, d: item.d, name: item.name || p.name };
             }
             return p;
           });
+          // 2. Extra paths guardados que no están en provincePaths (ej: nuevos territorios agregados o islas adicionales)
+          const baseIds = new Set(provincePaths.map(p => p.id));
+          const extraPaths = parsed
+            .filter(item => item && item.id && !baseIds.has(item.id) && item.d && item.d.trim())
+            .map(item => ({
+              id: item.id,
+              name: item.name || item.id,
+              d: item.d
+            }));
+          return [...baseUpdated, ...extraPaths];
         }
       } catch (e) {
         console.error('Error parsing calibrated map paths:', e);
@@ -281,10 +635,179 @@ export default function InteractiveMap({
     return provincePaths;
   }, [calibratedPathsTimestamp]);
 
+  // Combina las rutas guardadas con cualquier modificación live no guardada para previsualización inmediata
+  const effectiveProvincePaths = React.useMemo(() => {
+    return activeProvincePaths.map(p => {
+      if (macroModifiedPaths[p.id]) {
+        return { ...p, d: macroModifiedPaths[p.id] }; // Aplica el trazo SVG modificado en vivo
+      }
+      return p;
+    });
+  }, [activeProvincePaths, macroModifiedPaths]);
+
+  // Identifica el ID y Nombre del territorio activo seleccionado para manipular en el Índice de Ruta
+  const activeMacroTargetId = selectedSubdivisionId || (selectedProvince ? selectedProvince.id : null);
+  const activeMacroTargetName = selectedProvince?.name || (activeMacroTargetId ? (mockProvincesData[activeMacroTargetId]?.name || activeMacroTargetId) : 'Territorio Seleccionado');
+
+  // MANEJADOR DE DESPLAZAMIENTO FINO (NUDGE) PARA EL TERRITORIO SELECCIONADO EN EL MAPA GENERAL
+  const handleNudgeMacroTerritory = (deltaX: number, deltaY: number) => {
+    if (!activeMacroTargetId) {
+      showMacroToast('⚠️ Selecciona primero una provincia o territorio en el Índice de Ruta.');
+      return;
+    }
+    const currentProv = effectiveProvincePaths.find(p => p.id === activeMacroTargetId);
+    if (!currentProv || !currentProv.d) return;
+
+    const newD = translatePathD(currentProv.d, deltaX, deltaY); // Aplica traslación matemática pura
+    setMacroModifiedPaths(prev => ({
+      ...prev,
+      [activeMacroTargetId]: newD
+    }));
+    setHasMacroPendingChanges(true); // Marca que hay cambios listos para aplicar
+  };
+
+  // MANEJADOR DE ESCALADO / REDIMENSIONADO PARA EL TERRITORIO SELECCIONADO
+  const handleScaleMacroTerritory = (factor: number) => {
+    if (!activeMacroTargetId) {
+      showMacroToast('⚠️ Selecciona primero una provincia o territorio en el Índice de Ruta.');
+      return;
+    }
+    const currentProv = effectiveProvincePaths.find(p => p.id === activeMacroTargetId);
+    if (!currentProv || !currentProv.d) return;
+
+    const bbox = getPathBBox(currentProv.d); // Obtiene el centroide para escalar desde el centro del objeto
+    if (bbox.width <= 0 || bbox.height <= 0) return;
+
+    const anchorX = bbox.x + bbox.width / 2; // Centro X
+    const anchorY = bbox.y + bbox.height / 2; // Centro Y
+    const newD = scalePathD(currentProv.d, factor, factor, anchorX, anchorY); // Escala respecto al anclaje central
+
+    setMacroModifiedPaths(prev => ({
+      ...prev,
+      [activeMacroTargetId]: newD
+    }));
+    setHasMacroPendingChanges(true);
+  };
+
+  // MANEJADOR PARA ALINEAR AUTOMÁTICAMENTE CON EL PIN / INDICADOR Y ANIMACIÓN DE RUTA
+  const handleAlignMacroWithRoutePin = () => {
+    if (!activeMacroTargetId) {
+      showMacroToast('⚠️ Selecciona primero una provincia o territorio en el Índice de Ruta.');
+      return;
+    }
+    const currentProv = effectiveProvincePaths.find(p => p.id === activeMacroTargetId);
+    if (!currentProv || !currentProv.d) return;
+
+    // Coordenadas canónicas de referencia en el mapa de Argentina
+    const canonicalPins: Record<string, { x: number; y: number }> = {
+      'AR-MLV': { x: 600, y: 847 }, // Posición canónica del indicador geográfico de Malvinas
+      'AR-B': { x: 500, y: 480 },
+      'AR-C': { x: 440, y: 390 },
+      'AR-K': { x: 420, y: 250 },
+      'AR-H': { x: 485, y: 240 },
+      'AR-U': { x: 380, y: 640 },
+      'AR-X': { x: 440, y: 400 },
+      'AR-W': { x: 495, y: 255 },
+      'AR-E': { x: 500, y: 380 },
+      'AR-P': { x: 480, y: 190 },
+      'AR-Y': { x: 420, y: 160 },
+      'AR-L': { x: 410, y: 520 },
+      'AR-F': { x: 380, y: 330 },
+      'AR-M': { x: 375, y: 440 },
+      'AR-N': { x: 560, y: 240 },
+      'AR-Q': { x: 360, y: 560 },
+      'AR-R': { x: 400, y: 590 },
+      'AR-A': { x: 420, y: 200 },
+      'AR-J': { x: 370, y: 360 },
+      'AR-D': { x: 400, y: 440 },
+      'AR-Z': { x: 370, y: 760 },
+      'AR-S': { x: 480, y: 360 },
+      'AR-G': { x: 450, y: 270 },
+      'AR-V': { x: 430, y: 880 },
+      'AR-T': { x: 420, y: 260 }
+    };
+
+    const targetCoord = canonicalPins[activeMacroTargetId] || { x: 440, y: 500 };
+    const currentBBox = getPathBBox(currentProv.d);
+    if (currentBBox.width <= 0 || currentBBox.height <= 0) return;
+
+    const currentCenterX = currentBBox.x + currentBBox.width / 2;
+    const currentCenterY = currentBBox.y + currentBBox.height / 2;
+
+    const deltaX = targetCoord.x - currentCenterX;
+    const deltaY = targetCoord.y - currentCenterY;
+
+    const newD = translatePathD(currentProv.d, deltaX, deltaY); // Desplaza directamente a las coordenadas del pin
+    setMacroModifiedPaths(prev => ({
+      ...prev,
+      [activeMacroTargetId]: newD
+    }));
+    setHasMacroPendingChanges(true);
+    showMacroToast(`🎯 Alineado con el indicador de ruta en (${Math.round(targetCoord.x)}, ${Math.round(targetCoord.y)}). Haz clic en "APLICAR" para consolidar.`);
+  };
+
+  // MANEJADOR PARA APLICAR Y PERSISTIR LOS CAMBIOS EN EL MAPA COMPLETO
+  const handleApplyMacroChanges = () => {
+    try {
+      const fullList = effectiveProvincePaths.map(p => ({
+        id: p.id,
+        d: p.d
+      }));
+      safeSetItem('argentina_calibrated_map_paths', JSON.stringify(fullList)); // Guarda la colección completa de vectores
+      const nowStr = Date.now().toString();
+      safeSetItem('argentina_paths_last_updated', nowStr); // Actualiza la marca temporal de persistencia
+      setCalibratedPathsTimestamp(nowStr);
+
+      // Si la provincia tiene entidad guardada en el editor canvas, sincronizarla también
+      if (activeMacroTargetId) {
+        const provMapKey = `argentina_advanced_canvas_map_${activeMacroTargetId}`;
+        const savedEntity = safeGetItem(provMapKey);
+        if (savedEntity) {
+          try {
+            const parsed = JSON.parse(savedEntity);
+            if (parsed && Array.isArray(parsed.paths)) {
+              const updatedD = effectiveProvincePaths.find(p => p.id === activeMacroTargetId)?.d;
+              if (updatedD) {
+                parsed.paths = parsed.paths.map((p: any) => ({ ...p, d: updatedD }));
+                parsed.updatedAt = new Date().toISOString();
+                safeSetItem(provMapKey, JSON.stringify(parsed)); // Sincroniza la entidad de canvas
+              }
+            }
+          } catch (e) {
+            console.error('Error al sincronizar entidad de canvas:', e);
+          }
+        }
+      }
+
+      // Notificar a toda la aplicación
+      window.dispatchEvent(new CustomEvent('argentina_paths_updated'));
+      setMacroModifiedPaths({});
+      setHasMacroPendingChanges(false);
+      setMapMacroMode('select');
+      showMacroToast(`💾 ¡Cambios aplicados y guardados con éxito en el mapa completo!`);
+    } catch (err) {
+      console.error('Error al aplicar cambios macro:', err);
+    }
+  };
+
+  // MANEJADOR PARA RESTABLECER LA FORMA Y UBICACIÓN ORIGINAL DE FÁBRICA
+  const handleResetMacroToOriginal = () => {
+    if (!activeMacroTargetId) return;
+    const original = provincePaths.find(p => p.id === activeMacroTargetId);
+    if (original && original.d) {
+      setMacroModifiedPaths(prev => ({
+        ...prev,
+        [activeMacroTargetId]: original.d
+      }));
+      setHasMacroPendingChanges(true);
+      showMacroToast(`↺ Restablecido a la forma y posición original. Presiona 'APLICAR' para guardar.`);
+    }
+  };
+
   // Ruta SVG vectorial memorizada de la provincia activa seleccionada
   const selectedProvincePath = useMemo(() => { // Hook useMemo para optimizar el cálculo de la ruta vectorial
-    return activeProvincePaths.find(p => p.id === selectedProvince.id)?.d || (selectedProvince as unknown as { d?: string }).d || ''; // Busca la geometría SVG
-  }, [activeProvincePaths, selectedProvince.id, selectedProvince]); // Dependencias de sincronización de la provincia
+    return effectiveProvincePaths.find(p => p.id === selectedProvince.id)?.d || (selectedProvince as unknown as { d?: string }).d || ''; // Busca la geometría SVG
+  }, [effectiveProvincePaths, selectedProvince.id, selectedProvince]); // Dependencias de sincronización de la provincia
 
   // Cálculo memorizado del atributo viewBox adaptativo e inmune a errores NaN en estados vacíos
   const dynamicViewBox = useMemo(() => {
@@ -294,28 +817,32 @@ export default function InteractiveMap({
     }
 
     // 2. Si existen subdivisiones o polígonos vectoriales cargados para el territorio activo:
-    // Se calcula automáticamente la caja contenedora (Bounding Box) evitando divisiones por cero o valores NaN
+    // Se calcula automáticamente la caja contenedora (Bounding Box) asegurando que NUNCA se corte el mapa
     if (validMunicipalities && validMunicipalities.length > 0) { // Verifica si el arreglo contiene elementos
-      const bbox = getMultiplePathsBBox(validMunicipalities); // Determina los límites geográficos
-      if (bbox && bbox.width > 0 && bbox.height > 0 && !isNaN(bbox.x) && !isNaN(bbox.y)) { // Validación matemática anti-NaN
-        const padX = Math.max(10, bbox.width * 0.05); // Acolchado horizontal responsivo del 5%
-        const padY = Math.max(10, bbox.height * 0.05); // Acolchado vertical responsivo del 5%
-        return `${bbox.x - padX} ${bbox.y - padY} ${bbox.width + padX * 2} ${bbox.height + padY * 2}`; // Encadre perfecto
-      } // Fin de validación matemática
+      const pathsWithD = validMunicipalities.filter(m => m.d && m.d.trim().length > 5);
+      if (pathsWithD.length > 0) {
+        const bbox = getMultiplePathsBBox(pathsWithD); // Determina los límites geográficos de todos los polígonos
+        if (bbox && bbox.width > 0 && bbox.height > 0 && !isNaN(bbox.x) && !isNaN(bbox.y)) { // Validación matemática anti-NaN
+          const padX = Math.max(16, bbox.width * 0.04); // Acolchado horizontal responsivo del 4%
+          const padY = Math.max(16, bbox.height * 0.04); // Acolchado vertical responsivo del 4%
+          return `${bbox.x - padX} ${bbox.y - padY} ${bbox.width + padX * 2} ${bbox.height + padY * 2}`; // Encadre perfecto sin cortes
+        } // Fin de validación matemática
+      }
     } // Fin de condicional de municipios válidos
 
-    // 3. Vistas por defecto cuando no hay vectoriales custom o el nodo está vacío (FASE 2: LIENZO EN BLANCO)
-    if (activeMapLevel === 'world') return "0 0 1024 512"; // Vista estándar para el mapa mundial
-    if (activeMapLevel === 'continent') return "0 0 800 1000"; // Vista estándar para mapa continental
-
-    // 4. Bounding box automático basado en la silueta de la provincia activa en el Lienzo Principal
-    if (selectedProvincePath && selectedProvincePath.trim().length > 0) { // Si existe la ruta vectorial de la provincia activa
+    // 3. Bounding box automático basado en la silueta de la provincia o territorio activo en el Lienzo Principal
+    if (selectedProvincePath && selectedProvincePath.trim().length > 5) { // Si existe la ruta vectorial de la provincia activa
       const bbox = getPathBBox(selectedProvincePath); // Obtiene la caja límites de la provincia seleccionada
       if (bbox && bbox.width > 0 && bbox.height > 0 && !isNaN(bbox.x) && !isNaN(bbox.y)) { // Validación anti-NaN
-        const pad = 20; // Margen uniforme
-        return `${bbox.x - pad} ${bbox.y - pad} ${bbox.width + pad * 2} ${bbox.height + pad * 2}`; // Retorna viewBox
+        const padX = Math.max(20, bbox.width * 0.05); // Margen horizontal proporcional
+        const padY = Math.max(20, bbox.height * 0.05); // Margen vertical proporcional
+        return `${bbox.x - padX} ${bbox.y - padY} ${bbox.width + padX * 2} ${bbox.height + padY * 2}`; // Retorna viewBox
       }
     }
+
+    // 4. Vistas por defecto cuando no hay vectoriales custom o el nodo está vacío (FASE 2: LIENZO EN BLANCO)
+    if (activeMapLevel === 'world') return "0 0 1024 512"; // Vista estándar para el mapa mundial
+    if (activeMapLevel === 'continent') return "0 0 800 1000"; // Vista estándar para mapa continental
 
     // 5. FALLBACK SEGURO PARA NODOS TOTALMENTE VACÍOS (Lienzo en Blanco predeterminado)
     return "0 0 800 600"; // ViewBox predeterminado por defecto para evitar pantallas rotas
@@ -501,7 +1028,43 @@ export default function InteractiveMap({
             </button>
 
             {/* CONTROLES AVANZADOS DE ZOOM CON % EDITABLE, SLIDER DESPLAZABLE Y AJUSTE VISUAL FIT */}
-            <div className="flex items-center space-x-1 bg-slate-950 border border-slate-800 rounded-lg p-1">
+            <div className="flex items-center flex-wrap gap-1 bg-slate-950 border border-slate-800 rounded-lg p-1">
+              {/* SELECTOR / SWITCH DE AUTO-AJUSTE vs BLOQUEO DE REDIMENSIÓN */}
+              <label
+                className={`flex items-center space-x-1.5 px-2 py-1 rounded-md border text-[10.5px] font-bold cursor-pointer select-none transition-all ${
+                  isResizeLocked
+                    ? 'bg-amber-500/20 text-amber-300 border-amber-500/50 shadow-sm'
+                    : 'bg-emerald-500/15 text-emerald-300 border-emerald-500/40 hover:bg-emerald-500/25'
+                }`}
+                title={
+                  isResizeLocked
+                    ? 'Bloqueo de Tamaño Activado: Al arrastrar los paneles, el mapa mantiene su escala fija actual.'
+                    : 'Auto-Ajuste Responsivo: El mapa se redimensiona automáticamente al ajustar los paneles para verse siempre completo.'
+                }
+              >
+                <input
+                  type="checkbox"
+                  checked={isResizeLocked}
+                  onChange={(e) => toggleLockResize(e.target.checked)}
+                  className="accent-amber-500 w-3 h-3 cursor-pointer rounded"
+                />
+                <span className="flex items-center space-x-1">
+                  {isResizeLocked ? (
+                    <>
+                      <Lock size={12} className="text-amber-400" />
+                      <span>Bloquear Tamaño</span>
+                    </>
+                  ) : (
+                    <>
+                      <Unlock size={12} className="text-emerald-400" />
+                      <span>Auto-Ajuste</span>
+                    </>
+                  )}
+                </span>
+              </label>
+
+              <div className="w-px h-4 bg-slate-800 mx-0.5" />
+
               {/* BOTÓN HERRAMIENTA MANITO (DESPLAZAR / ARRASTRAR MAPA LIBREMENTE) */}
               <button
                 onClick={() => setIsPanToolActive(!isPanToolActive)}
@@ -566,7 +1129,7 @@ export default function InteractiveMap({
                   const newPct = parseFloat(e.target.value);
                   setZoomLevel(newPct / 100);
                 }}
-                className="w-16 sm:w-24 h-1.5 bg-slate-800 rounded-lg appearance-none cursor-pointer accent-emerald-500"
+                className="w-16 sm:w-20 h-1.5 bg-slate-800 rounded-lg appearance-none cursor-pointer accent-emerald-500"
                 title="Desliza para acercar o alejar el zoom sin límites"
               />
 
@@ -616,6 +1179,18 @@ export default function InteractiveMap({
                 >
                   <X size={14} className="text-slate-400" />
                   <span className="text-[10px] font-bold hidden xl:inline">Deseleccionar</span>
+                </button>
+              )}
+
+              {/* BOTÓN DE RECUPERACIÓN PURA DE MAPA MUNDIAL */}
+              {(activeMapLevel === 'world' || activeMapLevel === 'mundo' || selectedProvince?.id === 'WORLD_MAP') && onRestoreWorldMap && (
+                <button
+                  onClick={onRestoreWorldMap}
+                  className="p-1.5 bg-amber-500/20 hover:bg-amber-500/30 border border-amber-500/40 text-amber-300 rounded transition-colors cursor-pointer flex items-center space-x-1 animate-fade-in"
+                  title="Restaurar el mapa mundial original con todos sus países (sin alterar Argentina)"
+                >
+                  <RotateCcw size={14} className="text-amber-400" />
+                  <span className="text-[10px] font-bold">↺ Recuperar Mundo</span>
                 </button>
               )}
             </div>
@@ -824,8 +1399,12 @@ export default function InteractiveMap({
           </div>
         </div>
       ) : (
-        /* Caja Principal del Mapa SVG */
-      <div id="svg-map-wrapper" className="relative flex-1 min-h-[380px] bg-slate-950 rounded border border-slate-800 overflow-hidden flex items-center justify-center p-4">
+        /* Caja Principal del Mapa SVG con referencia y adaptación responsiva */
+        <div 
+          ref={mapWrapperRef}
+          id="svg-map-wrapper" 
+          className="relative flex-1 min-h-[440px] lg:min-h-[580px] w-full bg-slate-950 rounded-xl border border-slate-800 overflow-hidden flex items-center justify-center p-3 transition-all duration-150"
+        >
         {/* Selector de Nivel y Elementos del Mapa Desplegable (Índice de Ruta Estructurado con Submenús y Buscador Inteligente IA) */}
         <div id="dropdown-route-index" className="absolute top-4 left-4 z-40 flex flex-col space-y-1.5 min-w-[260px] max-w-[340px] pointer-events-auto">
           {/* Botón Disparador del Menú Emergente */}
@@ -882,6 +1461,22 @@ export default function InteractiveMap({
                   ) : (
                     <Sparkles size={11} className="absolute right-2.5 text-emerald-400/70 animate-pulse pointer-events-none" />
                   )}
+                </div>
+
+                {/* CONTROL DE AUTO-AJUSTE RESPONSIVO EN EL ÍNDICE DE RUTA */}
+                <div className="flex items-center justify-between bg-slate-900/90 border border-slate-800 rounded-xl px-2.5 py-1.5 text-[10px]">
+                  <span className="text-slate-400 font-medium">Auto-Ajuste Visual:</span>
+                  <label className="flex items-center space-x-1.5 cursor-pointer">
+                    <input
+                      type="checkbox"
+                      checked={isResizeLocked}
+                      onChange={(e) => toggleLockResize(e.target.checked)}
+                      className="accent-amber-500 w-3 h-3 cursor-pointer"
+                    />
+                    <span className={isResizeLocked ? "text-amber-400 font-bold" : "text-emerald-400 font-bold"}>
+                      {isResizeLocked ? "🔒 Tamaño Fijo" : "🔓 Dinámico"}
+                    </span>
+                  </label>
                 </div>
 
                 {/* BOTONES PESTAÑAS DE SUBMENÚ (CATEGORÍAS) */}
@@ -1156,7 +1751,329 @@ export default function InteractiveMap({
               </motion.div>
             )}
           </AnimatePresence>
+
+          {/* BANDEJA DE HERRAMIENTAS DE AJUSTE, MOVIMIENTO Y REDIMENSIÓN EN EL ÍNDICE DE RUTA */}
+          {activeMacroTargetId && (
+            <div className="bg-slate-900/90 border border-slate-700/80 rounded-xl p-2 shadow-2xl backdrop-blur-md space-y-2 mt-1">
+              <div className="flex items-center justify-between border-b border-slate-800 pb-1.5">
+                <span className="text-[9px] font-extrabold text-emerald-400 uppercase tracking-wider flex items-center gap-1 truncate max-w-[170px]">
+                  <MapPin size={10} className="text-emerald-400 shrink-0" />
+                  <span className="truncate">{activeMacroTargetName}</span>
+                </span>
+                {hasMacroPendingChanges && (
+                  <span className="text-[8px] bg-emerald-500/20 text-emerald-300 px-1.5 py-0.2 rounded font-mono font-bold animate-pulse">
+                    Cambios Pendientes
+                  </span>
+                )}
+              </div>
+
+              {/* BOTONES PRINCIPALES: MOVER Y REDIMENSIONAR (CON BLOQUEO DE ACCIONES CONFLICTIVAS) */}
+              <div className="grid grid-cols-2 gap-1.5">
+                <button
+                  type="button"
+                  onClick={() => setMapMacroMode(mapMacroMode === 'move' ? 'select' : 'move')}
+                  className={`py-1.5 px-2 rounded-lg font-bold text-[10px] flex items-center justify-center space-x-1 transition-all cursor-pointer ${
+                    mapMacroMode === 'move'
+                      ? 'bg-emerald-500 text-slate-950 shadow-md font-black ring-2 ring-emerald-400'
+                      : 'bg-slate-800 hover:bg-slate-750 text-slate-200 border border-slate-700'
+                  }`}
+                  title="Activar modo Mover para desplazar libremente la provincia/isla en el mapa completo"
+                >
+                  <Move size={12} />
+                  <span>{mapMacroMode === 'move' ? 'MOVIENDO' : 'MOVER'}</span>
+                </button>
+
+                <button
+                  type="button"
+                  onClick={() => setMapMacroMode(mapMacroMode === 'resize' ? 'select' : 'resize')}
+                  className={`py-1.5 px-2 rounded-lg font-bold text-[10px] flex items-center justify-center space-x-1 transition-all cursor-pointer ${
+                    mapMacroMode === 'resize'
+                      ? 'bg-purple-600 text-white shadow-md font-black ring-2 ring-purple-400'
+                      : 'bg-slate-800 hover:bg-slate-750 text-slate-200 border border-slate-700'
+                  }`}
+                  title="Activar modo Redimensionar para escalar el tamaño del territorio"
+                >
+                  <Maximize2 size={12} />
+                  <span>{mapMacroMode === 'resize' ? 'ESCALANDO' : 'REDIMENSIONAR'}</span>
+                </button>
+              </div>
+
+              {/* CONTROLES DIRECTOS DE DESPLAZAMIENTO SI MODO MOVER ESTÁ ACTIVO */}
+              {mapMacroMode === 'move' && (
+                <div className="space-y-1.5 pt-1 bg-slate-950/60 p-2 rounded-lg border border-emerald-500/30">
+                  <div className="flex items-center justify-between text-[9px] text-slate-400">
+                    <span>Mover con Flechas:</span>
+                    <button
+                      onClick={handleAlignMacroWithRoutePin}
+                      className="text-[9px] text-emerald-400 hover:underline font-bold flex items-center gap-0.5 cursor-pointer"
+                      title="Alinear con la posición canónica del indicador y animación de ruta"
+                    >
+                      <Target size={10} />
+                      <span>🎯 Ubicar en Pin</span>
+                    </button>
+                  </div>
+                  <div className="grid grid-cols-4 gap-1">
+                    <button
+                      onClick={() => handleNudgeMacroTerritory(-5, 0)}
+                      className="py-1 bg-slate-800 hover:bg-slate-700 text-slate-200 rounded text-center text-xs font-bold"
+                      title="Mover 5px Izquierda"
+                    >
+                      ⬅️
+                    </button>
+                    <button
+                      onClick={() => handleNudgeMacroTerritory(5, 0)}
+                      className="py-1 bg-slate-800 hover:bg-slate-700 text-slate-200 rounded text-center text-xs font-bold"
+                      title="Mover 5px Derecha"
+                    >
+                      ➡️
+                    </button>
+                    <button
+                      onClick={() => handleNudgeMacroTerritory(0, -5)}
+                      className="py-1 bg-slate-800 hover:bg-slate-700 text-slate-200 rounded text-center text-xs font-bold"
+                      title="Mover 5px Arriba"
+                    >
+                      ⬆️
+                    </button>
+                    <button
+                      onClick={() => handleNudgeMacroTerritory(0, 5)}
+                      className="py-1 bg-slate-800 hover:bg-slate-700 text-slate-200 rounded text-center text-xs font-bold"
+                      title="Mover 5px Abajo"
+                    >
+                      ⬇️
+                    </button>
+                  </div>
+                </div>
+              )}
+
+              {/* CONTROLES DIRECTOS DE ESCALA SI MODO REDIMENSIONAR ESTÁ ACTIVO */}
+              {mapMacroMode === 'resize' && (
+                <div className="space-y-1.5 pt-1 bg-slate-950/60 p-2 rounded-lg border border-purple-500/30">
+                  <span className="text-[9px] text-purple-300 font-bold block">Escalar Tamaño:</span>
+                  <div className="grid grid-cols-5 gap-1">
+                    <button
+                      onClick={() => handleScaleMacroTerritory(0.8)}
+                      className="py-1 bg-purple-950/60 hover:bg-purple-900 text-purple-200 border border-purple-800 rounded text-[9px] font-bold"
+                      title="Achicar 20%"
+                    >
+                      -20%
+                    </button>
+                    <button
+                      onClick={() => handleScaleMacroTerritory(0.9)}
+                      className="py-1 bg-purple-950/60 hover:bg-purple-900 text-purple-200 border border-purple-800 rounded text-[9px] font-bold"
+                      title="Achicar 10%"
+                    >
+                      -10%
+                    </button>
+                    <button
+                      onClick={() => handleScaleMacroTerritory(1.1)}
+                      className="py-1 bg-purple-950/60 hover:bg-purple-900 text-purple-200 border border-purple-800 rounded text-[9px] font-bold"
+                      title="Agrandar 10%"
+                    >
+                      +10%
+                    </button>
+                    <button
+                      onClick={() => handleScaleMacroTerritory(1.25)}
+                      className="py-1 bg-purple-950/60 hover:bg-purple-900 text-purple-200 border border-purple-800 rounded text-[9px] font-bold"
+                      title="Agrandar 25%"
+                    >
+                      +25%
+                    </button>
+                    <button
+                      onClick={() => handleScaleMacroTerritory(1.5)}
+                      className="py-1 bg-purple-950/60 hover:bg-purple-900 text-purple-200 border border-purple-800 rounded text-[9px] font-bold"
+                      title="Agrandar 50%"
+                    >
+                      +50%
+                    </button>
+                  </div>
+                </div>
+              )}
+
+              {/* BOTÓN ALINEAR CON PIN DE RUTA DIRECTO */}
+              <button
+                type="button"
+                onClick={handleAlignMacroWithRoutePin}
+                className="w-full py-1.5 px-2 bg-emerald-950/60 hover:bg-emerald-900/80 border border-emerald-500/40 text-emerald-300 rounded-lg text-[10px] font-bold flex items-center justify-center space-x-1.5 transition-all cursor-pointer shadow-sm"
+                title="Coloca y calibra la posición exactamente sobre el indicador geográfico de ruta"
+              >
+                <Target size={12} className="text-emerald-400" />
+                <span>🎯 Ubicar en Indicador / Pin de Ruta</span>
+              </button>
+
+              {/* BOTONES DE ACCIÓN: APLICAR CAMBIOS Y RESTABLECER */}
+              <div className="flex items-center space-x-1.5 pt-1 border-t border-slate-800">
+                <button
+                  type="button"
+                  onClick={handleApplyMacroChanges}
+                  className={`flex-1 py-1.5 px-2 rounded-lg font-black text-[10px] flex items-center justify-center space-x-1 transition-all cursor-pointer ${
+                    hasMacroPendingChanges
+                      ? 'bg-emerald-500 hover:bg-emerald-400 text-slate-950 shadow-lg shadow-emerald-950/50 animate-pulse'
+                      : 'bg-slate-800 hover:bg-slate-750 text-slate-300 border border-slate-700'
+                  }`}
+                  title="Guardar y aplicar de forma permanente la nueva ubicación y tamaño al mapa completo"
+                >
+                  <Save size={11} />
+                  <span>APLICAR AL MAPA</span>
+                </button>
+
+                <button
+                  type="button"
+                  onClick={handleResetMacroToOriginal}
+                  className="py-1.5 px-2 bg-slate-800 hover:bg-slate-700 text-slate-400 hover:text-slate-200 rounded-lg text-[10px] font-bold flex items-center justify-center transition-all cursor-pointer border border-slate-700"
+                  title="Restablecer a la forma y posición original de fábrica"
+                >
+                  <RotateCcw size={11} />
+                  <span className="sr-only">Restablecer</span>
+                </button>
+              </div>
+            </div>
+          )}
         </div> {/* Fin de contenedor del selector desplegable */}
+
+        {/* HUD FLOTANTE SUPERIOR EN EL MAPA COMPLETO CUANDO MODO MOVER O REDIMENSIONAR ESTÁ ACTIVO */}
+        {mapMacroMode !== 'select' && (
+          <div className="absolute top-4 right-4 z-30 bg-slate-950/95 border-2 border-emerald-500/80 rounded-2xl p-2 px-3 shadow-[0_0_25px_rgba(16,185,129,0.4)] backdrop-blur-xl flex items-center space-x-2.5 animate-fade-in pointer-events-auto">
+            <div className="flex items-center space-x-1.5 text-emerald-400 font-bold text-xs">
+              <span className="relative flex h-2 w-2">
+                <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75"></span>
+                <span className="relative inline-flex rounded-full h-2 w-2 bg-emerald-500"></span>
+              </span>
+              <span className="uppercase tracking-wider font-mono text-[10px]">
+                {mapMacroMode === 'move' ? 'MODO MOVER ACTIVO' : 'MODO REDIMENSIONAR ACTIVO'}
+              </span>
+            </div>
+
+            <div className="w-px h-4 bg-slate-800" />
+
+            {mapMacroMode === 'move' ? (
+              <div className="flex items-center space-x-1">
+                <button
+                  onClick={() => handleNudgeMacroTerritory(-5, 0)}
+                  className="p-1 bg-slate-800 hover:bg-slate-700 text-slate-200 rounded border border-slate-700 text-[10px] font-bold"
+                  title="Mover Izquierda"
+                >
+                  ⬅️
+                </button>
+                <button
+                  onClick={() => handleNudgeMacroTerritory(5, 0)}
+                  className="p-1 bg-slate-800 hover:bg-slate-700 text-slate-200 rounded border border-slate-700 text-[10px] font-bold"
+                  title="Mover Derecha"
+                >
+                  ➡️
+                </button>
+                <button
+                  onClick={() => handleNudgeMacroTerritory(0, -5)}
+                  className="p-1 bg-slate-800 hover:bg-slate-700 text-slate-200 rounded border border-slate-700 text-[10px] font-bold"
+                  title="Mover Arriba"
+                >
+                  ⬆️
+                </button>
+                <button
+                  onClick={() => handleNudgeMacroTerritory(0, 5)}
+                  className="p-1 bg-slate-800 hover:bg-slate-700 text-slate-200 rounded border border-slate-700 text-[10px] font-bold"
+                  title="Mover Abajo"
+                >
+                  ⬇️
+                </button>
+              </div>
+            ) : (
+              <div className="flex items-center space-x-1">
+                <button
+                  onClick={() => handleScaleMacroTerritory(0.9)}
+                  className="px-1.5 py-0.5 bg-purple-950/60 hover:bg-purple-900 text-purple-200 border border-purple-700/50 rounded text-[9px] font-bold"
+                  title="Achicar 10%"
+                >
+                  -10%
+                </button>
+                <button
+                  onClick={() => handleScaleMacroTerritory(1.1)}
+                  className="px-1.5 py-0.5 bg-purple-950/60 hover:bg-purple-900 text-purple-200 border border-purple-700/50 rounded text-[9px] font-bold"
+                  title="Agrandar 10%"
+                >
+                  +10%
+                </button>
+                <button
+                  onClick={() => handleScaleMacroTerritory(1.25)}
+                  className="px-1.5 py-0.5 bg-purple-950/60 hover:bg-purple-900 text-purple-200 border border-purple-700/50 rounded text-[9px] font-bold"
+                  title="Agrandar 25%"
+                >
+                  +25%
+                </button>
+              </div>
+            )}
+
+            <div className="w-px h-4 bg-slate-800" />
+
+            <button
+              onClick={handleAlignMacroWithRoutePin}
+              className="px-2 py-1 bg-slate-800 hover:bg-slate-700 text-emerald-300 font-bold rounded-lg text-[10px] transition-all cursor-pointer flex items-center space-x-1 border border-slate-700"
+              title="Ubicar exactamente en la posición del pin de ruta"
+            >
+              <Target size={10} className="text-emerald-400" />
+              <span>Pin</span>
+            </button>
+
+            <button
+              onClick={handleApplyMacroChanges}
+              className="px-2 py-1 bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-black rounded-lg text-[10px] transition-all cursor-pointer flex items-center space-x-1 shadow"
+              title="Guardar y aplicar en el mapa completo"
+            >
+              <Save size={10} />
+              <span>APLICAR</span>
+            </button>
+
+            <button
+              onClick={() => setMapMacroMode('select')}
+              className="px-2 py-1 bg-slate-800 hover:bg-slate-700 text-slate-300 rounded-lg text-[10px] font-bold transition-colors cursor-pointer"
+              title="Cerrar modo de edición"
+            >
+              <Check size={10} />
+              <span>Listo</span>
+            </button>
+          </div>
+        )}
+
+        {/* BANNER FLOTANTE DEL MODO ASOCIACIÓN DIRECTA POR CLIC */}
+        {directAssociateSource && (
+          <div className="absolute top-3 left-1/2 -translate-x-1/2 z-40 bg-purple-950/95 border-2 border-purple-500/80 rounded-2xl p-2.5 px-4 flex items-center justify-between text-xs text-purple-200 shadow-2xl backdrop-blur-md max-w-lg w-[92%] animate-fadeIn">
+            <div className="flex items-center space-x-2.5 truncate">
+              <span className="text-base animate-bounce">🎯</span>
+              <div className="truncate">
+                <p className="font-black text-white text-[11px] uppercase tracking-wider truncate">
+                  MODO ASOCIAR DIRECTO ACTIVO
+                </p>
+                <p className="text-[10px] text-purple-300 truncate">
+                  Haz clic en el mapa (ej: <strong>Argentina</strong>) para unir <strong>"{directAssociateSource.name}"</strong>
+                </p>
+              </div>
+            </div>
+            <button
+              onClick={() => {
+                setDirectAssociateSource(null);
+                sessionStorage.removeItem('argentina_direct_associate_source');
+                showMacroToast('Modo de asociación cancelado.');
+              }}
+              className="ml-2 px-2.5 py-1 bg-slate-800 hover:bg-slate-700 text-slate-300 rounded-lg text-[10px] font-black uppercase tracking-wider shrink-0 cursor-pointer border border-slate-700"
+            >
+              ✕ Cancelar
+            </button>
+          </div>
+        )}
+
+        {/* TOAST DE NOTIFICACIÓN DE CALIBRACIÓN MACRO */}
+        <AnimatePresence>
+          {macroFeedbackToast && (
+            <motion.div
+              initial={{ opacity: 0, y: -20, scale: 0.95 }}
+              animate={{ opacity: 1, y: 0, scale: 1 }}
+              exit={{ opacity: 0, y: -20, scale: 0.95 }}
+              className="absolute top-16 left-1/2 -translate-x-1/2 z-50 bg-slate-950/95 border border-emerald-500/80 text-emerald-300 font-bold px-4 py-2 rounded-xl shadow-2xl backdrop-blur-xl text-xs flex items-center space-x-2 pointer-events-none"
+            >
+              <Sparkles size={14} className="text-emerald-400 animate-pulse" />
+              <span>{macroFeedbackToast}</span>
+            </motion.div>
+          )}
+        </AnimatePresence>
 
         {/* Estado Vacío Informativo Banner cuando no hay vectores cargados para esta capa */}
         {validMunicipalities.length === 0 && activeMapLevel !== 'country' && activeMapLevel !== 'pais' && (
@@ -1173,12 +2090,13 @@ export default function InteractiveMap({
           </div>
         )}
 
-        {/* Mapa SVG Interactivo */}
+        {/* Mapa SVG Interactivo con Escalado Proporcional Infalible */}
         <motion.svg
           id="argentina-svg-map"
           viewBox={dynamicViewBox}
+          preserveAspectRatio="xMidYMid meet"
           onPointerDown={handlePointerDownPan}
-          className={`w-full h-full max-h-[500px] select-none ${
+          className={`w-full h-full min-h-[420px] select-none ${
             isDraggingCanvas ? 'cursor-grabbing' : isPanToolActive ? 'cursor-grab' : 'cursor-default'
           }`}
           style={{
@@ -1239,7 +2157,7 @@ export default function InteractiveMap({
           {/* Capas e items vectoriales según el nivel */}
           {(activeMapLevel === 'country' || activeMapLevel === 'pais') ? (
             <g id="provinces-group">
-              {activeProvincePaths.map((prov) => {
+              {effectiveProvincePaths.map((prov) => {
                 const val = getProvinceValue(prov.id, selectedMetric); // Recupera el valor estadístico
                 const isSelected = selectedProvince.id === prov.id || selectedSubdivisionId === prov.id; // Evalúa si está seleccionado
                 const isHovered = hoveredProv === prov.id; // Estado hover
@@ -1252,10 +2170,17 @@ export default function InteractiveMap({
                     d={prov.d}
                     fill={fillHex}
                     vectorEffect="non-scaling-stroke"
-                    stroke={isSelected ? '#10b981' : '#334155'} // Resaltado verde emerald en selección
-                    strokeWidth={isSelected ? 1.5 : 0.6} // Grosor fino responsivo en pantalla sin importar el zoom
-                    className="transition-all duration-150 cursor-pointer"
-                    onClick={() => { // REGLA 2: Clic simple SOLO selecciona para inspección en el DataPanel (Micro Vista)
+                    stroke={directAssociateSource ? (isHovered ? '#c084fc' : (isSelected ? '#a855f7' : '#64748b')) : (isSelected ? '#10b981' : '#334155')} // Resaltado visual en modo asociación
+                    strokeWidth={directAssociateSource ? (isHovered ? 2.5 : (isSelected ? 2 : 0.8)) : (isSelected ? 1.5 : 0.6)} // Grosor fino responsivo
+                    className={`transition-all duration-150 cursor-pointer ${directAssociateSource ? 'hover:scale-[1.005]' : ''}`}
+                    onClick={() => {
+                      // SI EL MODO ASOCIACIÓN DIRECTA ESTÁ ACTIVO, EJECUTA LA ASOCIACIÓN INMEDIATA SIN MODALES
+                      if (directAssociateSource) {
+                        handlePerformDirectAssociate(prov.id, prov.name);
+                        return;
+                      }
+
+                      // REGLA 2: Clic simple SOLO selecciona para inspección en el DataPanel (Micro Vista)
                       const fullData = mockProvincesData[prov.id] || {
                         id: prov.id,
                         name: prov.name,
@@ -1266,6 +2191,7 @@ export default function InteractiveMap({
                       setSelectedSubdivisionId(prov.id); // Establece el id seleccionado sin cambiar el mapa
                     }}
                     onDoubleClick={() => { // REGLA 2: Doble clic realiza el Drill-Down (avanza de nivel y limpia selección)
+                      if (directAssociateSource) return;
                       if (onNavigateToNode) { // Si existe la función de navegación jerárquica
                         onNavigateToNode({ id: prov.id, name: prov.name, type: 'provincia' }); // Navega al nivel provincia
                       }
@@ -1274,7 +2200,9 @@ export default function InteractiveMap({
                     onMouseEnter={() => setHoveredProv(prov.id)}
                     onMouseLeave={() => setHoveredProv(null)}
                     style={{
-                      filter: isSelected
+                      filter: directAssociateSource && isHovered
+                        ? 'drop-shadow(0px 0px 12px rgba(168, 85, 247, 0.9)) brightness(1.25)'
+                        : isSelected
                         ? 'drop-shadow(0px 4px 10px rgba(16, 185, 129, 0.4))'
                         : isHovered
                         ? 'brightness(1.2)'
@@ -1309,8 +2237,12 @@ export default function InteractiveMap({
                   const val = muni.value; // Recupera el valor asignado
                   
                   const fillHex = muni.visualStyles?.fillColor || muni.color || getColorForValue(val, selectedMetric); // Color de relleno
-                  const strokeHex = isSelected ? '#f59e0b' : (muni.visualStyles?.strokeColor || '#334155'); // Color de contorno (dorado en selección)
-                  const strokeW = isSelected ? 1.5 : (muni.visualStyles?.strokeWidth !== undefined ? muni.visualStyles.strokeWidth : 0.6); // Grosor de contorno
+                  const strokeHex = directAssociateSource 
+                    ? (isHovered ? '#c084fc' : (isSelected ? '#a855f7' : '#64748b'))
+                    : (isSelected ? '#f59e0b' : (muni.visualStyles?.strokeColor || '#334155')); // Color de contorno
+                  const strokeW = directAssociateSource
+                    ? (isHovered ? 2.5 : (isSelected ? 2 : 0.8))
+                    : (isSelected ? 1.5 : (muni.visualStyles?.strokeWidth !== undefined ? muni.visualStyles.strokeWidth : 0.6)); // Grosor de contorno
 
                   return ( // Retorna el elemento vectorial del polígono
                     <path
@@ -1321,7 +2253,14 @@ export default function InteractiveMap({
                       strokeWidth={strokeW}
                       vectorEffect="non-scaling-stroke"
                       className="transition-all duration-150 cursor-pointer animate-fade-in"
-                      onClick={() => { // REGLA 2: Clic simple selecciona el municipio/subdivisión para la Micro Vista en DataPanel
+                      onClick={() => {
+                        // SI EL MODO ASOCIACIÓN DIRECTA ESTÁ ACTIVO, ASOCIA AL MUNICIPIO / RUTA CLICKEADA
+                        if (directAssociateSource) {
+                          handlePerformDirectAssociate(muni.id, muni.name);
+                          return;
+                        }
+
+                        // REGLA 2: Clic simple selecciona el municipio/subdivisión para la Micro Vista en DataPanel
                         setSelectedSubdivisionId(muni.id); // Selecciona la subdivisión activa sin cambiar el mapa
                         setEditSubName(muni.name); // Carga el nombre en el editor
                         setEditSubVal(muni.value); // Carga el valor en el editor
@@ -1330,6 +2269,7 @@ export default function InteractiveMap({
                         setManagerTab('palette'); // Establece la pestaña de paleta
                       }}
                       onDoubleClick={() => { // REGLA 2: Doble clic realiza Drill-Down hacia un nivel más profundo
+                        if (directAssociateSource) return;
                         if (onNavigateToNode) { // Si existe la función de navegación
                           onNavigateToNode({ id: muni.id, name: muni.name, type: 'subdivision' }); // Navega al sub-nodo
                         }
@@ -1338,7 +2278,9 @@ export default function InteractiveMap({
                       onMouseEnter={() => setHoveredMuni(muni.id)}
                       onMouseLeave={() => setHoveredMuni(null)}
                       style={{
-                        filter: isSelected
+                        filter: directAssociateSource && isHovered
+                          ? 'drop-shadow(0px 0px 12px rgba(168, 85, 247, 0.9)) brightness(1.25)'
+                          : isSelected
                           ? 'drop-shadow(0px 0px 8px #f59e0b)'
                           : isHovered
                           ? 'brightness(1.2)'
@@ -1354,9 +2296,14 @@ export default function InteractiveMap({
                   id={`full-province-main-path-${selectedProvince.id}`}
                   d={selectedProvincePath}
                   fill={getColorForValue(getProvinceValue(selectedProvince.id, selectedMetric), selectedMetric)}
-                  stroke="#10b981"
+                  stroke={directAssociateSource ? '#c084fc' : '#10b981'}
                   strokeWidth={2.5}
                   className="transition-all duration-150 cursor-pointer animate-fade-in"
+                  onClick={() => {
+                    if (directAssociateSource) {
+                      handlePerformDirectAssociate(selectedProvince.id, selectedProvince.name);
+                    }
+                  }}
                   style={{ filter: 'drop-shadow(0px 4px 10px rgba(16, 185, 129, 0.4))' }}
                 />
               ) : (

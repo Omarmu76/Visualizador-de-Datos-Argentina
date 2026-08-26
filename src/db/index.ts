@@ -16,6 +16,9 @@ export function getDb() {
     if (connectionString) {
       poolInstance = new pg.Pool({
         connectionString,
+        max: 5,
+        connectionTimeoutMillis: 3000,
+        idleTimeoutMillis: 10000,
         ssl: connectionString.includes('localhost') || connectionString.includes('127.0.0.1')
           ? false
           : { rejectUnauthorized: false }
@@ -26,12 +29,20 @@ export function getDb() {
         user,
         password,
         database,
+        max: 5,
+        connectionTimeoutMillis: 3000,
+        idleTimeoutMillis: 10000,
         // Unix sockets do not support/require SSL. If host is a path, disable SSL.
         ssl: host.startsWith('/') ? false : { rejectUnauthorized: false }
       });
     } else {
       throw new Error('Database configuration missing. Set either SQL_DATABASE_URL or individual SQL_* environment variables.');
     }
+
+    // Previene excepciones no capturadas cuando el servidor Cloud SQL suspende o corta conexiones inactivas
+    poolInstance.on('error', (err) => {
+      console.warn('[Cloud SQL] Aviso de cliente inactivo en el pool (reconexión automática):', err.message);
+    });
 
     dbInstance = drizzle(poolInstance, { schema });
   }
@@ -45,3 +56,4 @@ export function closePool() {
     dbInstance = null;
   }
 }
+

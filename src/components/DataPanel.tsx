@@ -22,7 +22,8 @@ import {
   Navigation,
   CheckCircle,
   HelpCircle,
-  Clock
+  Clock,
+  RotateCcw
 } from 'lucide-react';
 import { ProvinceData, RegionNode, NavNode } from '../types'; // Importación de tipos de datos e interfaces
 
@@ -34,6 +35,7 @@ interface DataPanelProps {
   onBreadcrumbClick?: (index: number) => void; // Función opcional para retroceder en migas tradicionales
   navPath?: NavNode[]; // Arreglo del historial de navegación dinámico universal (Motor Vectorial)
   goBackToNode?: (index: number) => void; // Función para retroceder hasta el índice de nodo seleccionado en el historial
+  onRestoreWorldMap?: () => void; // Función de recuperación pura del mapa mundial original
 }
 
 // 1. Mini SVG Segmented Ring Chart (for sectors and spending)
@@ -140,7 +142,8 @@ export default function DataPanel({
   navigationPath = [],
   onBreadcrumbClick,
   navPath,
-  goBackToNode
+  goBackToNode,
+  onRestoreWorldMap
 }: DataPanelProps) {
   const [navToMuni, setNavToMuni] = useState(false);
   const selectedSubdivision = province.municipalities?.find(m => m.id === selectedSubdivisionId);
@@ -308,25 +311,39 @@ export default function DataPanel({
         </div>
 
         {/* Interruptor de Navegación Maestro-Detalle hacia Municipios o Hijos */}
-        <div className="flex items-center space-x-3 bg-slate-950 p-2 px-3 rounded-lg border border-slate-800 shadow-sm">
-          {/* Botón de switch o toggle */}
-          <button
-            onClick={() => setNavToMuni(!navToMuni)} // Alterna el estado de navegación
-            className={`w-10 h-5 rounded-full transition-all duration-300 relative focus:outline-none cursor-pointer ${
-              navToMuni ? 'bg-emerald-600' : 'bg-slate-800' // Cambia color de fondo según el estado
-            }`} // Clases base de Tailwind
-          >
-            <div // Píldora circular deslizante
-              className={`w-3.5 h-3.5 bg-white rounded-full absolute top-0.75 transition-all duration-300 shadow-sm ${
-                navToMuni ? 'left-5.5' : 'left-1' // Desplaza la bolita
-              }`} // Clases de posición
-            />
-          </button>
-          {/* Etiqueta de texto de la acción */}
-          <span className="text-xs text-slate-300 font-bold flex items-center">
-            <Navigation size={13} className="mr-1.5 text-emerald-400" /> {/* Icono de brújula de navegación */}
-            {province.id === 'WORLD_MAP' || province.id === 'CONTINENT_MAP' ? 'Navegar a Países' : 'Explorar Municipios'} {/* Texto de acción */}
-          </span>
+        <div className="flex items-center space-x-3">
+          {/* Botón de Restauración Rápida de Mundo */}
+          {province.id === 'WORLD_MAP' && onRestoreWorldMap && (
+            <button
+              onClick={onRestoreWorldMap}
+              className="flex items-center space-x-1.5 px-3 py-1.5 bg-amber-500/10 hover:bg-amber-500/20 border border-amber-500/30 text-amber-300 rounded-lg text-xs font-bold transition-all cursor-pointer shadow-sm"
+              title="Restaurar el mapa mundial original con todos los continentes y países (sin alterar Argentina)"
+            >
+              <RotateCcw size={13} className="text-amber-400" />
+              <span>↺ Recuperar Mapa Mundo</span>
+            </button>
+          )}
+
+          <div className="flex items-center space-x-3 bg-slate-950 p-2 px-3 rounded-lg border border-slate-800 shadow-sm">
+            {/* Botón de switch o toggle */}
+            <button
+              onClick={() => setNavToMuni(!navToMuni)} // Alterna el estado de navegación
+              className={`w-10 h-5 rounded-full transition-all duration-300 relative focus:outline-none cursor-pointer ${
+                navToMuni ? 'bg-emerald-600' : 'bg-slate-800' // Cambia color de fondo según el estado
+              }`} // Clases base de Tailwind
+            >
+              <div // Píldora circular deslizante
+                className={`w-3.5 h-3.5 bg-white rounded-full absolute top-0.75 transition-all duration-300 shadow-sm ${
+                  navToMuni ? 'left-5.5' : 'left-1' // Desplaza la bolita
+                }`} // Clases de posición
+              />
+            </button>
+            {/* Etiqueta de texto de la acción */}
+            <span className="text-xs text-slate-300 font-bold flex items-center">
+              <Navigation size={13} className="mr-1.5 text-emerald-400" /> {/* Icono de brújula de navegación */}
+              {province.id === 'WORLD_MAP' || province.id === 'CONTINENT_MAP' ? 'Navegar a Países' : 'Explorar Municipios'} {/* Texto de acción */}
+            </span>
+          </div>
         </div>
       </div>
 
