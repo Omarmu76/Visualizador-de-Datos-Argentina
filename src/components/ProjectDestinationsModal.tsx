@@ -43,12 +43,29 @@ import {
   Layers,
   Lock,
   LogIn,
-  FileText
+  LogOut,
+  User,
+  FileText,
+  Eye
 } from 'lucide-react'; // Íconos UI de lucide-react
 import { UniversalFileViewer, UniversalFileItem, BreadcrumbPathItem } from './UniversalFileViewer.tsx'; // Componente universal con Grid Dark Theme tipo Drive
+import { MapVisualComparisonPreview, extractPathsFromPayload, ExtractedMapPath } from './MapVisualComparisonPreview.tsx'; // Comparador y visualizador vectorial de mapas en tiempo real
 
 
 export type ModalTab = 'save' | 'open_db' | 'open_drive' | 'open_disk' | 'conflict';
+
+// Interfaz para archivos de proyecto locales leídos en disco
+export interface LocalDiskFileRecord {
+  id: string; // Identificador único local
+  name: string; // Nombre del mapa o proyecto
+  filename: string; // Nombre del archivo .json físico
+  modifiedTime: string; // Fecha de modificación
+  size: number; // Tamaño en bytes
+  payload: any; // Contenido JSON completo del mapa
+  extractedPaths?: ExtractedMapPath[]; // Trazados vectoriales precalculados para miniatura
+  provincesCount?: number; // Cantidad de polígonos/provincias
+  activeLevel?: string; // Nivel del mapa (país, provincia, etc.)
+}
 
 interface ProjectDestinationsModalProps { // Propiedades del modal
   isOpen: boolean; // Estado de visibilidad
@@ -64,6 +81,7 @@ interface ProjectDestinationsModalProps { // Propiedades del modal
   onLoadProject: (record: SavedProjectRecord) => void; // Cargar proyecto seleccionado de BD
   onLoadFromGoogleDrive?: (fileId: string) => Promise<void>; // Cargar proyecto desde Drive
   onLoadFromDisk?: () => void; // Cargar proyecto desde Disco
+  onLoadLocalPayload?: (payload: any, filename?: string) => void; // Cargar proyecto directamente desde archivo local con miniatura
   isDirty: boolean; // Cambios pendientes en memoria
   lastSaveStatus: { destination: string; time: string } | null; // Último guardado
   currentProjectId: string | null; // ID activo en BD
@@ -85,6 +103,7 @@ export const ProjectDestinationsModal: React.FC<ProjectDestinationsModalProps> =
   onLoadProject,
   onLoadFromGoogleDrive,
   onLoadFromDisk,
+  onLoadLocalPayload,
   isDirty,
   lastSaveStatus,
   currentProjectId,
@@ -97,6 +116,21 @@ export const ProjectDestinationsModal: React.FC<ProjectDestinationsModalProps> =
   const [savedDbProjects, setSavedDbProjects] = useState<SavedProjectRecord[]>([]);
   // Lista de proyectos recuperados de Google Drive
   const [savedDriveProjects, setSavedDriveProjects] = useState<DriveProjectRecord[]>([]);
+  // Caché de datos vectoriales y miniaturas para archivos de Google Drive
+  const [driveThumbnailsCache, setDriveThumbnailsCache] = useState<Record<string, { payload?: any; extractedPaths?: ExtractedMapPath[] }>>({});
+  // Lista de archivos examinados / cargados desde disco local con persistencia en localStorage
+  const [localDiskFiles, setLocalDiskFiles] = useState<LocalDiskFileRecord[]>(() => {
+    try {
+      const raw = localStorage.getItem('recent_local_map_files');
+      return raw ? JSON.parse(raw) : [];
+    } catch (e) {
+      return [];
+    }
+  });
+  // Referencia al selector de archivos nativo de disco
+  const localFileInputRef = React.useRef<HTMLInputElement | null>(null);
+  // Estado para efecto visual de arrastrar y soltar (drag and drop)
+  const [isDraggingOverLocal, setIsDraggingOverLocal] = useState<boolean>(false);
   // Filtro de búsqueda de proyectos
   const [searchQuery, setSearchQuery] = useState<string>('');
   // Indicador de carga de lista BD
@@ -105,6 +139,8 @@ export const ProjectDestinationsModal: React.FC<ProjectDestinationsModalProps> =
   const [isLoadingDrive, setIsLoadingDrive] = useState<boolean>(false);
   // Token de Google Workspace detectado
   const [hasGoogleAuth, setHasGoogleAuth] = useState<boolean>(false);
+  // Email o perfil del usuario conectado a Google
+  const [googleUserEmail, setGoogleUserEmail] = useState<string | null>(null);
   // Nombre editable local
   const [editName, setEditName] = useState<string>(projectName);
   // Descripción opcional para la BD
@@ -119,6 +155,7 @@ export const ProjectDestinationsModal: React.FC<ProjectDestinationsModalProps> =
     report: VersionConflictReport;
     targetPayload: any;
     targetRecord?: SavedProjectRecord;
+    targetLocalRecord?: LocalDiskFileRecord;
     driveFileId?: string;
   } | null>(null);
 
@@ -141,6 +178,15 @@ export const ProjectDestinationsModal: React.FC<ProjectDestinationsModalProps> =
                   (window as any).__GOOGLE_WORKSPACE_ACCESS_TOKEN__;
     const isAuthed = Boolean(token);
     setHasGoogleAuth(isAuthed);
+    
+    // Obtener email del usuario activo de Firebase Auth si existe
+    if (auth.currentUser?.email) {
+      setGoogleUserEmail(auth.currentUser.email);
+    } else {
+      const storedEmail = localStorage.getItem('gdrive_user_email');
+      if (storedEmail) setGoogleUserEmail(storedEmail);
+    }
+
     if (isAuthed) {
       loadDriveProjectsList();
     }
@@ -154,22 +200,27 @@ export const ProjectDestinationsModal: React.FC<ProjectDestinationsModalProps> =
       const provider = new GoogleAuthProvider();
       // Scopes requeridos para guardar, leer y gestionar archivos en Google Drive
       provider.addScope('https://www.googleapis.com/auth/drive.file');
-      provider.addScope('https://www.googleapis.com/auth/drive.readonly');
       provider.addScope('https://www.googleapis.com/auth/userinfo.profile');
       provider.addScope('https://www.googleapis.com/auth/userinfo.email');
       provider.setCustomParameters({
-        prompt: 'consent select_account' // Asegura refresco de credenciales y selección de cuenta
+        prompt: 'consent select_account' // Asegura selector de cuenta y pantalla de permisos de Google
       });
       
       const result = await signInWithPopup(auth, provider);
       const credential = GoogleAuthProvider.credentialFromResult(result);
       const token = credential?.accessToken;
+      const userEmail = result.user?.email || null;
+
       if (token) {
         localStorage.setItem('gdrive_access_token', token);
         sessionStorage.setItem('gdrive_access_token', token);
+        if (userEmail) {
+          localStorage.setItem('gdrive_user_email', userEmail);
+          setGoogleUserEmail(userEmail);
+        }
         (window as any).__GOOGLE_WORKSPACE_ACCESS_TOKEN__ = token;
         setHasGoogleAuth(true);
-        setStatusMessage({ text: '✓ Conexión exitosa con Google Workspace / Drive.', type: 'success' });
+        setStatusMessage({ text: `✓ Conexión exitosa con Google Drive (${userEmail || 'Cuenta Google'}).`, type: 'success' });
         await loadDriveProjectsList();
         return true;
       } else {
@@ -180,16 +231,30 @@ export const ProjectDestinationsModal: React.FC<ProjectDestinationsModalProps> =
       // Limpia tokens inválidos en caso de error
       localStorage.removeItem('gdrive_access_token');
       sessionStorage.removeItem('gdrive_access_token');
+      localStorage.removeItem('gdrive_user_email');
       (window as any).__GOOGLE_WORKSPACE_ACCESS_TOKEN__ = null;
       setHasGoogleAuth(false);
+      setGoogleUserEmail(null);
       setStatusMessage({ 
-        text: `Error de autenticación Google: ${e.message}. Verifique permitir pop-ups en el navegador.`, 
+        text: `Error de autenticación Google: ${e.message}. Asegúrate de permitir las ventanas emergentes (pop-ups) en tu navegador para iniciar sesión.`, 
         type: 'error' 
       });
       return false;
     } finally {
       setIsBusy(false);
     }
+  };
+
+  // Desconecta la cuenta de Google y limpia tokens locales
+  const handleGoogleDisconnect = () => {
+    localStorage.removeItem('gdrive_access_token');
+    sessionStorage.removeItem('gdrive_access_token');
+    localStorage.removeItem('gdrive_user_email');
+    (window as any).__GOOGLE_WORKSPACE_ACCESS_TOKEN__ = null;
+    setHasGoogleAuth(false);
+    setGoogleUserEmail(null);
+    setSavedDriveProjects([]);
+    setStatusMessage({ text: 'Sesión de Google desconectada correctamente.', type: 'info' });
   };
 
   // Carga la lista de proyectos desde la Base de Datos Cloud SQL
@@ -205,12 +270,29 @@ export const ProjectDestinationsModal: React.FC<ProjectDestinationsModalProps> =
     }
   };
 
-  // Carga la lista de archivos JSON desde Google Drive
+  // Carga la lista de archivos JSON desde Google Drive y precarga las miniaturas vectoriales
   const loadDriveProjectsList = async () => {
     setIsLoadingDrive(true);
     try {
       const list = await fetchProjectsFromGoogleDrive();
       setSavedDriveProjects(list);
+
+      // Descarga en segundo plano el contenido de cada mapa en Drive para renderizar miniaturas vectoriales instantáneas
+      list.forEach(async (file) => {
+        try {
+          const { payload } = await fetchProjectContentFromGoogleDrive(file.id);
+          const extracted = extractPathsFromPayload(payload);
+          setDriveThumbnailsCache((prev) => ({
+            ...prev,
+            [file.id]: {
+              payload,
+              extractedPaths: extracted.paths
+            }
+          }));
+        } catch (err) {
+          console.warn(`No se pudo obtener miniatura para archivo de Drive ${file.name}:`, err);
+        }
+      });
     } catch (e: any) {
       console.warn('Error al listar proyectos de Drive:', e.message);
       if (e.message?.includes('401') || e.message?.includes('UNAUTHENTICATED') || e.message?.includes('Invalid Credentials')) {
@@ -222,6 +304,100 @@ export const ProjectDestinationsModal: React.FC<ProjectDestinationsModalProps> =
     } finally {
       setIsLoadingDrive(false);
     }
+  };
+
+  // Procesa una lista de archivos JSON locales (desde input file o drag-and-drop)
+  const processLocalJsonFiles = async (files: FileList | File[]) => {
+    setIsBusy(true);
+    setStatusMessage({ text: 'Analizando archivos locales y extrayendo mapas vectoriales...', type: 'info' });
+    
+    const newRecords: LocalDiskFileRecord[] = [];
+    
+    for (let i = 0; i < files.length; i++) {
+      const file = files[i];
+      if (!file.name.toLowerCase().endsWith('.json')) continue;
+      try {
+        const text = await file.text();
+        const json = JSON.parse(text);
+        const extracted = extractPathsFromPayload(json);
+        const cleanName = (json.name || json.projectName || file.name.replace(/\.json$/i, ''));
+        
+        const record: LocalDiskFileRecord = {
+          id: 'local_' + Date.now() + '_' + Math.random().toString(36).substring(2, 7),
+          name: cleanName,
+          filename: file.name,
+          modifiedTime: file.lastModified ? new Date(file.lastModified).toISOString() : new Date().toISOString(),
+          size: file.size,
+          payload: json,
+          extractedPaths: extracted.paths,
+          provincesCount: extracted.paths.length,
+          activeLevel: json.activeMapLevel || json.metadata?.activeMapLevel || 'Nivel Mapa'
+        };
+        newRecords.push(record);
+      } catch (err: any) {
+        console.warn(`Error al leer archivo local ${file.name}:`, err);
+      }
+    }
+
+    if (newRecords.length > 0) {
+      setLocalDiskFiles(prev => {
+        // Filtra elementos repetidos por nombre y tamaño, coloca los nuevos al principio
+        const filtered = prev.filter(p => !newRecords.some(n => n.name === p.name && n.size === p.size));
+        const combined = [...newRecords, ...filtered].slice(0, 25);
+        try {
+          localStorage.setItem('recent_local_map_files', JSON.stringify(combined));
+        } catch (e) {
+          console.warn('No se pudo persistir en localStorage:', e);
+        }
+        return combined;
+      });
+      setStatusMessage({ text: `✓ ${newRecords.length} archivo(s) local(es) cargado(s) con miniatura visual.`, type: 'success' });
+    } else {
+      setStatusMessage({ text: 'No se pudieron extraer mapas válidos de los archivos seleccionados.', type: 'error' });
+    }
+    setIsBusy(false);
+  };
+
+  // Limpia el historial de archivos locales examinados
+  const handleClearLocalFilesHistory = () => {
+    if (window.confirm('¿Deseas limpiar la lista de archivos locales examinados?')) {
+      setLocalDiskFiles([]);
+      localStorage.removeItem('recent_local_map_files');
+      setStatusMessage({ text: 'Lista de archivos locales limpiada.', type: 'info' });
+    }
+  };
+
+  // Manejador Inteligente para Abrir desde Disco Local con Chequeo de Conflictos
+  const handleSelectOpenLocalProject = (item: UniversalFileItem) => {
+    const record = localDiskFiles.find(f => f.id === item.id);
+    if (!record) return;
+
+    if (isDirty && currentPayload) {
+      const conflict = detectProjectVersionConflict(currentPayload, record.payload, `Disco Local (${record.name})`);
+      if (conflict.hasConflict) {
+        setConflictReport({
+          report: conflict,
+          targetPayload: record.payload,
+          targetLocalRecord: record
+        });
+        setActiveTab('conflict');
+        return;
+      }
+    }
+
+    if (onLoadLocalPayload) {
+      onLoadLocalPayload(record.payload, record.name);
+    } else if (onLoadProject) {
+      onLoadProject({
+        id: record.id,
+        name: record.name,
+        description: `Archivo Local (${record.activeLevel || 'Mapa'})`,
+        activeLevel: record.activeLevel || 'Nacional',
+        updatedAt: record.modifiedTime,
+        payload: record.payload
+      });
+    }
+    onClose();
   };
 
   if (!isOpen) return null;
@@ -399,6 +575,8 @@ export const ProjectDestinationsModal: React.FC<ProjectDestinationsModalProps> =
     if (!conflictReport) return;
     if (conflictReport.targetRecord) {
       onLoadProject(conflictReport.targetRecord);
+    } else if (conflictReport.targetLocalRecord && onLoadLocalPayload) {
+      onLoadLocalPayload(conflictReport.targetLocalRecord.payload, conflictReport.targetLocalRecord.name);
     } else if (conflictReport.driveFileId && onLoadFromGoogleDrive) {
       onLoadFromGoogleDrive(conflictReport.driveFileId);
     }
@@ -567,7 +745,7 @@ export const ProjectDestinationsModal: React.FC<ProjectDestinationsModalProps> =
             }`}
           >
             <HardDrive size={13} className="text-purple-400" />
-            <span>💻 Disco Local (.json)</span>
+            <span>💻 Disco Local {localDiskFiles.length > 0 ? `(${localDiskFiles.length})` : '(.json)'}</span>
           </button>
 
           {/* Pestaña Conflicto (solo si existe reporte activo) */}
@@ -866,51 +1044,102 @@ export const ProjectDestinationsModal: React.FC<ProjectDestinationsModalProps> =
                 </div>
               ) : (
                 <>
-                  <div className="flex items-center justify-between">
-                    <div className="flex items-center space-x-2">
-                      <div className="p-1.5 rounded-lg bg-amber-500/10 text-amber-400 border border-amber-500/30">
-                        <Cloud size={15} />
+                  <div className="flex flex-wrap items-center justify-between gap-2 bg-slate-950/70 p-3 rounded-xl border border-slate-800">
+                    <div className="flex items-center space-x-2.5">
+                      <div className="p-2 rounded-lg bg-amber-500/10 text-amber-400 border border-amber-500/30 shrink-0">
+                        <Cloud size={18} />
                       </div>
                       <div>
-                        <h3 className="text-xs font-black text-slate-200 uppercase tracking-wider">
-                          Mi Unidad Google Drive
-                        </h3>
+                        <div className="flex items-center space-x-2">
+                          <h3 className="text-xs font-black text-slate-200 uppercase tracking-wider">
+                            Mi Unidad Google Drive
+                          </h3>
+                          {googleUserEmail && (
+                            <span className="text-[10px] bg-amber-500/15 text-amber-300 border border-amber-500/30 px-2 py-0.5 rounded-full font-mono flex items-center space-x-1">
+                              <User size={10} />
+                              <span>{googleUserEmail}</span>
+                            </span>
+                          )}
+                        </div>
                         <p className="text-[11px] text-slate-400">
                           Archivos JSON de mapas sincronizados en tu nube de Google
                         </p>
                       </div>
                     </div>
 
-                    <button
-                      type="button"
-                      onClick={loadDriveProjectsList}
-                      disabled={isLoadingDrive}
-                      className="bg-slate-800 hover:bg-slate-700 text-amber-400 text-xs font-bold px-3 py-1.5 rounded-xl border border-slate-700 flex items-center space-x-1.5 cursor-pointer transition"
-                    >
-                      <RefreshCw size={12} className={isLoadingDrive ? 'animate-spin' : ''} />
-                      <span>Refrescar</span>
-                    </button>
+                    <div className="flex items-center space-x-2">
+                      <button
+                        type="button"
+                        onClick={loadDriveProjectsList}
+                        disabled={isLoadingDrive}
+                        className="bg-slate-800 hover:bg-slate-700 text-amber-400 text-xs font-bold px-3 py-1.5 rounded-xl border border-slate-700 flex items-center space-x-1.5 cursor-pointer transition"
+                        title="Refrescar lista de archivos"
+                      >
+                        <RefreshCw size={12} className={isLoadingDrive ? 'animate-spin' : ''} />
+                        <span>Refrescar</span>
+                      </button>
+
+                      <button
+                        type="button"
+                        onClick={handleGoogleConnect}
+                        disabled={isBusy}
+                        className="bg-amber-500/20 hover:bg-amber-500/30 text-amber-300 border border-amber-500/40 text-xs font-bold px-3 py-1.5 rounded-xl flex items-center space-x-1.5 cursor-pointer transition"
+                        title="Cambiar de cuenta o reautenticar"
+                      >
+                        <LogIn size={12} />
+                        <span className="hidden sm:inline">Cambiar Cuenta</span>
+                      </button>
+
+                      <button
+                        type="button"
+                        onClick={handleGoogleDisconnect}
+                        className="bg-rose-950/40 hover:bg-rose-900/60 text-rose-300 border border-rose-800/50 text-xs font-bold px-2.5 py-1.5 rounded-xl flex items-center space-x-1 cursor-pointer transition"
+                        title="Desconectar cuenta de Google"
+                      >
+                        <LogOut size={12} />
+                      </button>
+                    </div>
                   </div>
 
-                  {/* Componente Universal de Archivos en formato Grid Dark Mode para Google Drive */}
+                  {/* Componente Universal de Archivos en formato Grid Dark Mode para Google Drive con Miniaturas Vectoriales */}
                   <UniversalFileViewer
-                    items={savedDriveProjects.map((file) => ({
-                      id: file.id,
-                      name: file.name,
-                      type: 'json',
-                      source: 'drive',
-                      size: file.size ? Number(file.size) : undefined,
-                      updatedAt: file.modifiedTime,
-                      thumbnailUrl: file.thumbnailLink || undefined,
-                      webViewLink: file.webViewLink || undefined,
-                      isCurrentActive: file.id === currentDriveFileId
-                    }))}
+                    items={savedDriveProjects.map((file) => {
+                      const cached = driveThumbnailsCache[file.id];
+                      return {
+                        id: file.id,
+                        name: file.name,
+                        type: 'json',
+                        source: 'drive',
+                        size: file.size ? Number(file.size) : undefined,
+                        updatedAt: file.modifiedTime,
+                        thumbnailUrl: file.thumbnailLink || undefined,
+                        webViewLink: file.webViewLink || undefined,
+                        isCurrentActive: file.id === currentDriveFileId,
+                        originalPayload: cached?.payload,
+                        extractedPaths: cached?.extractedPaths,
+                        svgThumbnailPreview: cached?.payload?.provinces?.[0]?.d || undefined,
+                        description: cached?.extractedPaths 
+                          ? `${cached.extractedPaths.length} polígonos • Google Drive` 
+                          : 'Google Drive JSON'
+                      };
+                    })}
                     onSelectItem={(item) => {
                       const found = savedDriveProjects.find((f) => f.id === item.id);
                       if (found) handleSelectOpenDriveProject(found);
                     }}
                     onDeleteItem={(item, e) => {
                       handleDeleteFromDrive(item.id, item.name, e);
+                    }}
+                    onDownloadItem={(item, e) => {
+                      const cached = driveThumbnailsCache[item.id];
+                      if (cached?.payload) {
+                        handleDownloadCopy(cached.payload, item.name, e);
+                      } else {
+                        // Si aún no está en caché, descarga el archivo
+                        fetchProjectContentFromGoogleDrive(item.id).then(res => {
+                          handleDownloadCopy(res.payload, item.name, e);
+                        });
+                      }
                     }}
                     breadcrumbs={[
                       { id: 'root', name: 'Inicio' },
@@ -926,35 +1155,134 @@ export const ProjectDestinationsModal: React.FC<ProjectDestinationsModalProps> =
           )}
 
           {/* ========================================================================= */}
-          {/* 4. PESTAÑA: DISCO LOCAL (JSON)                                            */}
+          {/* 4. PESTAÑA: DISCO LOCAL (JSON / UNIDADES LOCALES)                          */}
           {/* ========================================================================= */}
           {activeTab === 'open_disk' && (
             <div className="space-y-4">
-              <div className="p-8 text-center border-2 border-dashed border-slate-800 hover:border-purple-500/50 bg-slate-950/40 rounded-2xl space-y-4 transition">
-                <div className="w-12 h-12 rounded-2xl bg-purple-500/10 border border-purple-500/30 flex items-center justify-center text-purple-400 mx-auto">
-                  <HardDrive size={24} />
+              {/* Barra de cabecera con acciones locales */}
+              <div className="flex flex-wrap items-center justify-between gap-2 bg-slate-950/70 p-3 rounded-xl border border-slate-800">
+                <div className="flex items-center space-x-2.5">
+                  <div className="p-2 rounded-lg bg-purple-500/10 text-purple-400 border border-purple-500/30 shrink-0">
+                    <HardDrive size={18} />
+                  </div>
+                  <div>
+                    <div className="flex items-center space-x-2">
+                      <h3 className="text-xs font-black text-slate-200 uppercase tracking-wider">
+                        Archivos en Disco Local / PC
+                      </h3>
+                      {localDiskFiles.length > 0 && (
+                        <span className="text-[10px] bg-purple-500/15 text-purple-300 border border-purple-500/30 px-2 py-0.5 rounded-full font-mono">
+                          {localDiskFiles.length} examinados
+                        </span>
+                      )}
+                    </div>
+                    <p className="text-[11px] text-slate-400">
+                      Explora tus archivos JSON locales con miniaturas vectoriales automáticas
+                    </p>
+                  </div>
                 </div>
-                <div className="space-y-1">
-                  <h4 className="text-sm font-bold text-slate-200">
-                    Abrir Archivo de Mapa desde tu Computadora
-                  </h4>
-                  <p className="text-xs text-slate-400 max-w-md mx-auto">
-                    Selecciona cualquier archivo <code>.json</code> exportado previamente para restaurar el lienzo, los datos y las métricas.
-                  </p>
+
+                <div className="flex items-center space-x-2">
+                  <input
+                    type="file"
+                    ref={localFileInputRef}
+                    multiple
+                    accept=".json,application/json"
+                    onChange={(e) => {
+                      if (e.target.files && e.target.files.length > 0) {
+                        processLocalJsonFiles(e.target.files);
+                      }
+                      e.target.value = ''; // Resetea para permitir volver a seleccionar el mismo archivo
+                    }}
+                    className="hidden"
+                  />
+
+                  <button
+                    type="button"
+                    onClick={() => localFileInputRef.current?.click()}
+                    disabled={isBusy}
+                    className="bg-purple-600 hover:bg-purple-500 text-white text-xs font-bold px-3.5 py-1.5 rounded-xl border border-purple-500/40 flex items-center space-x-1.5 cursor-pointer transition shadow-sm"
+                    title="Examinar archivos JSON en tu computadora o unidades externas"
+                  >
+                    <FolderOpen size={13} />
+                    <span>Examinar en PC (.json)</span>
+                  </button>
+
+                  {localDiskFiles.length > 0 && (
+                    <button
+                      type="button"
+                      onClick={handleClearLocalFilesHistory}
+                      className="bg-slate-800 hover:bg-slate-700 text-slate-300 text-xs font-medium px-2.5 py-1.5 rounded-xl border border-slate-700 flex items-center space-x-1 cursor-pointer transition"
+                      title="Limpiar lista de archivos locales examinados"
+                    >
+                      <Trash2 size={12} className="text-slate-400" />
+                      <span className="hidden sm:inline">Limpiar</span>
+                    </button>
+                  )}
                 </div>
-                <button
-                  onClick={() => {
-                    if (onLoadFromDisk) {
-                      onLoadFromDisk();
-                      onClose();
-                    }
-                  }}
-                  className="bg-purple-600 hover:bg-purple-500 text-white font-black px-5 py-2.5 rounded-xl text-xs transition uppercase tracking-wider shadow-lg shadow-purple-950 cursor-pointer flex items-center space-x-2 mx-auto"
-                >
-                  <FolderOpen size={14} />
-                  <span>Examinar Archivos en PC (.json)</span>
-                </button>
               </div>
+
+              {/* Zona de Drop & Drop interactiva */}
+              <div
+                onDragOver={(e) => { e.preventDefault(); setIsDraggingOverLocal(true); }}
+                onDragLeave={() => setIsDraggingOverLocal(false)}
+                onDrop={(e) => {
+                  e.preventDefault();
+                  setIsDraggingOverLocal(false);
+                  if (e.dataTransfer.files && e.dataTransfer.files.length > 0) {
+                    processLocalJsonFiles(e.dataTransfer.files);
+                  }
+                }}
+                className={`p-3 rounded-xl border-2 border-dashed transition text-center flex items-center justify-center space-x-2 ${
+                  isDraggingOverLocal
+                    ? 'border-purple-400 bg-purple-950/40 text-purple-200'
+                    : 'border-slate-800/80 bg-slate-950/30 text-slate-400 hover:border-slate-700'
+                }`}
+              >
+                <FolderOpen size={14} className={isDraggingOverLocal ? 'text-purple-300 animate-bounce' : 'text-slate-500'} />
+                <span className="text-[11px]">
+                  {isDraggingOverLocal 
+                    ? '¡Suelta tus archivos .json aquí para generar miniaturas!' 
+                    : 'Arrastra archivos o carpetas .json aquí o haz clic en "Examinar en PC" para previsualizarlos en cuadrícula'}
+                </span>
+              </div>
+
+              {/* Componente Universal de Archivos para Disco Local con Miniaturas Vectoriales */}
+              <UniversalFileViewer
+                items={localDiskFiles.map((f) => ({
+                  id: f.id,
+                  name: f.name,
+                  type: 'json',
+                  source: 'local',
+                  size: f.size,
+                  updatedAt: f.modifiedTime,
+                  originalPayload: f.payload,
+                  extractedPaths: f.extractedPaths,
+                  svgThumbnailPreview: f.payload?.provinces?.[0]?.d || undefined,
+                  description: `Archivo Local • ${f.provincesCount || 0} polígonos`,
+                  isCurrentActive: f.name === projectName
+                }))}
+                onSelectItem={handleSelectOpenLocalProject}
+                onDeleteItem={(item, e) => {
+                  e.stopPropagation();
+                  setLocalDiskFiles(prev => {
+                    const updated = prev.filter(p => p.id !== item.id);
+                    try { localStorage.setItem('recent_local_map_files', JSON.stringify(updated)); } catch (err) {}
+                    return updated;
+                  });
+                }}
+                onDownloadItem={(item, e) => {
+                  const found = localDiskFiles.find(p => p.id === item.id);
+                  if (found) handleDownloadCopy(found.payload, found.name, e);
+                }}
+                breadcrumbs={[
+                  { id: 'root', name: 'Inicio' },
+                  { id: 'disk', name: 'Disco Local (Archivos en PC)' }
+                ]}
+                isLoading={isBusy}
+                emptyMessage="No has examinado archivos locales todavía. Haz clic en 'Examinar en PC' o arrastra archivos .json para ver sus miniaturas vectoriales aquí."
+                searchPlaceholder="Buscar archivos locales..."
+              />
             </div>
           )}
 
@@ -976,7 +1304,17 @@ export const ProjectDestinationsModal: React.FC<ProjectDestinationsModalProps> =
                 </p>
               </div>
 
-              {/* Comparativa Visual Lado a Lado */}
+              {/* Comparativa Visual Gráfica con Siluetas SVG Vectoriales (Lado a Lado y Superposición Diff) */}
+              <MapVisualComparisonPreview
+                localPayload={currentPayload || {}}
+                remotePayload={conflictReport.targetPayload || {}}
+                remoteSourceName={conflictReport.report.remoteSummary.source}
+                localLastModified={conflictReport.report.localSummary.lastModified}
+                remoteLastModified={conflictReport.report.remoteSummary.lastModified}
+                newerSource={conflictReport.report.newerSource}
+              />
+
+              {/* Comparativa de Metadatos y Métricas Lado a Lado */}
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                 
                 {/* Lado 1: Versión Local en Memoria */}

@@ -42,6 +42,7 @@ interface AdvancedCanvasEditorProps {
   selectedSubdivisionId?: string | null; // ID de la subdivisión/polígono seleccionado en el índice o mapa
   onSelectSubdivision?: (id: string | null) => void; // Callback para sincronizar la selección con la vista global
   navPath?: NavNode[]; // Historial de navegación dinámico universal
+  onDirtyChange?: (isDirty: boolean) => void; // Notifica el estado de cambios sin guardar al gestor de proyectos
 }
 
 // Auxiliar: Convierte coordenadas de anillos GeoJSON a trazados de comando SVG 'd'
@@ -708,7 +709,8 @@ export default function AdvancedCanvasEditor({
   onSaveMapEntity, // Callback de guardado de mapa
   selectedSubdivisionId, // ID del polígono o subdivisión seleccionada en la vista izquierda o selector
   onSelectSubdivision, // Callback para notificar cambios de selección al selector general
-  navPath // Historial de navegación dinámico universal
+  navPath, // Historial de navegación dinámico universal
+  onDirtyChange // Notifica el estado de cambios sin guardar
 }: AdvancedCanvasEditorProps) {
   const [searchParams] = useSearchParams(); // Permite leer ?parentId=... de la URL
   const urlParentId = searchParams.get('parentId'); // Obtiene la referencia superior enviada en la URL
@@ -1367,6 +1369,8 @@ export default function AdvancedCanvasEditor({
       const trimmedStack = newStack.length > 30 ? newStack.slice(newStack.length - 30) : newStack; // Trunca si excede 30
       setHistoryStack(trimmedStack); // Actualiza la pila de estados
       setHistoryIndex(trimmedStack.length - 1); // Desplaza el puntero al último estado recién añadido
+      if (onDirtyChange) onDirtyChange(true); // Sincroniza estado con el botón de Guardar
+      window.dispatchEvent(new CustomEvent('projectDataModified')); // Notifica modificación global
     }
   }, [mapEntity]); // Se ejecuta cada vez que el mapa vectorial sufre alguna modificación
 
@@ -1377,6 +1381,13 @@ export default function AdvancedCanvasEditor({
       const targetState = JSON.parse(JSON.stringify(historyStack[prevIndex])); // Clona el estado previo
       setHistoryIndex(prevIndex); // Retrocede el puntero del historial
       setMapEntity(targetState); // Restaura el estado del mapa en React
+      if (initialMapSnapshotRef.current && JSON.stringify(initialMapSnapshotRef.current) === JSON.stringify(targetState)) {
+        if (onDirtyChange) onDirtyChange(false);
+        window.dispatchEvent(new CustomEvent('projectDataSaved'));
+      } else {
+        if (onDirtyChange) onDirtyChange(true);
+        window.dispatchEvent(new CustomEvent('projectDataModified'));
+      }
       showNotify(`[↩️] Acción deshecha (Paso ${prevIndex + 1} de ${historyStack.length})`); // Muestra notificación
     }
   }; // Fin de handleUndo
@@ -1388,6 +1399,8 @@ export default function AdvancedCanvasEditor({
       const targetState = JSON.parse(JSON.stringify(historyStack[nextIndex])); // Clona el estado futuro
       setHistoryIndex(nextIndex); // Avanza el puntero del historial
       setMapEntity(targetState); // Aplica el estado en React
+      if (onDirtyChange) onDirtyChange(true);
+      window.dispatchEvent(new CustomEvent('projectDataModified'));
       showNotify(`[↪️] Acción rehecha (Paso ${nextIndex + 1} de ${historyStack.length})`); // Notifica al usuario
     }
   }; // Fin de handleRedo
@@ -1416,6 +1429,8 @@ export default function AdvancedCanvasEditor({
 
     setMapEntity(originalSnapshot); // Restaura el mapa al snapshot inicial
     setSelectedPathIds([]); // Limpia la lista de trazos seleccionados
+    if (onDirtyChange) onDirtyChange(false); // Restablece indicador sin cambios
+    window.dispatchEvent(new CustomEvent('projectDataSaved')); // Notifica guardado
     showNotify("[↩️] Cambios descartados: El mapa volvió a su estado inicial sin guardar."); // Notifica al usuario
   }; // Fin de handleCancelUnsavedChanges
 
@@ -3959,9 +3974,11 @@ export default function AdvancedCanvasEditor({
     window.dispatchEvent(new CustomEvent('argentina_paths_updated'));
     window.dispatchEvent(new Event('storage'));
     window.dispatchEvent(new CustomEvent('mapDataUpdated', { detail: { provinceId: activeTargetId, d: finalFittedD } }));
+    window.dispatchEvent(new CustomEvent('projectDataSaved'));
 
     // Actualiza el snapshot inicial con la nueva versión recién guardada
     initialMapSnapshotRef.current = JSON.parse(JSON.stringify(mapEntity));
+    if (onDirtyChange) onDirtyChange(false);
 
     showNotify(`[✅] ¡Cambios aplicados con éxito! La nueva forma de "${activeTargetName}" se ha actualizado en el mapa principal respetando sus medidas y ubicación exactas.`);
   };

@@ -562,6 +562,7 @@ function AppContent() { // Componente que maneja el estado global y las rutas de
     handleSaveToDisk,
     handleLoadFromDatabase,
     handleLoadFromGoogleDrive,
+    handleLoadLocalPayload,
     getProjectPayload
   } = useProjectManager(
     {
@@ -594,6 +595,18 @@ function AppContent() { // Componente que maneja el estado global y las rutas de
     setProjectName(newName); // Actualiza el estado del nombre
     setIsDirty(true); // Marca el estado como modificado
   }; // Fin de handleProjectNameChange
+
+  // EFECTO REACTIVO: ESCUCHA EVENTOS GLOBALES DE MODIFICACIÓN Y GUARDADO DE PROYECTO
+  useEffect(() => {
+    const handleModified = () => setIsDirty(true);
+    const handleSaved = () => setIsDirty(false);
+    window.addEventListener('projectDataModified', handleModified);
+    window.addEventListener('projectDataSaved', handleSaved);
+    return () => {
+      window.removeEventListener('projectDataModified', handleModified);
+      window.removeEventListener('projectDataSaved', handleSaved);
+    };
+  }, [setIsDirty]);
 
   // Cálculo derivado del ID de la entidad territorial activa según el nivel del mapa
   const activeProvinceId = 
@@ -1211,6 +1224,8 @@ function AppContent() { // Componente que maneja el estado global y las rutas de
         onSelectSubdivision={handleHeaderSelectSubdivision} // Pasa el manejador de selección desde el desplegable del Header
         projectName={projectName} // Pasa el nombre del proyecto activo
         isDirty={isDirty} // Pasa el estado booleano de cambios sin guardar
+        isSaving={isSaving} // Pasa el estado de guardado en proceso
+        lastSaveStatus={lastSaveStatus} // Pasa la información de último guardado exitoso
         onProjectNameChange={handleProjectNameChange} // Pasa el manejador para renombrar el proyecto
         onNewProject={handleNewProject} // Pasa el manejador para crear nuevo proyecto
         onOpenProject={() => handleOpenDestinations('open_db')} // Pasa el manejador para abrir proyectos desde BD, Drive o Disco
@@ -1422,6 +1437,7 @@ function AppContent() { // Componente que maneja el estado global y las rutas de
                     selectedSubdivisionId={selectedSubdivisionId} // Pasa el ID de la subdivisión activa
                     onSelectSubdivision={handleSelectSubdivision} // Pasa el manejador para sincronización bidireccional
                     navPath={navPath} // Pasa el historial de navegación dinámico
+                    onDirtyChange={(dirty) => setIsDirty(dirty)} // Sincroniza estado sin guardar con Header
                     onSaveMapEntity={(entity) => { // Manejador de guardado de mapa
                       console.log("Mapa guardado exitosamente por Usuario Pro:", entity); // Notifica el guardado
                     }}
@@ -1538,6 +1554,7 @@ function AppContent() { // Componente que maneja el estado global y las rutas de
                     selectedSubdivisionId={selectedSubdivisionId} // Pasa el ID de la subdivisión activa
                     onSelectSubdivision={handleSelectSubdivision} // Pasa el manejador para sincronizar selección
                     navPath={navPath} // Pasa el historial de navegación dinámico
+                    onDirtyChange={(dirty) => setIsDirty(dirty)} // Sincroniza estado sin guardar con Header
                     onSaveMapEntity={(entity) => { // Manejador de guardado
                       console.log("Mapa guardado por Super Admin:", entity); // Notifica el guardado
                     }}
@@ -1601,6 +1618,7 @@ function AppContent() { // Componente que maneja el estado global y las rutas de
         onLoadProject={handleLoadFromDatabase}
         onLoadFromGoogleDrive={handleLoadFromGoogleDrive}
         onLoadFromDisk={handleOpenProject}
+        onLoadLocalPayload={handleLoadLocalPayload}
         isDirty={isDirty}
         lastSaveStatus={lastSaveStatus}
         currentProjectId={projectId}

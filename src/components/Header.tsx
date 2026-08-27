@@ -34,7 +34,11 @@ import {
   FolderOpen, // Ícono de abrir archivo/proyecto
   Save, // Ícono de disco/guardar
   XCircle, // Ícono de cerrar proyecto
-  Cloud // Ícono de nube / base de datos y drive
+  Cloud, // Ícono de nube / base de datos y drive
+  AlertTriangle, // Ícono de advertencia para diálogo de cambios sin guardar
+  Trash2, // Ícono para descartar cambios
+  X, // Ícono de cerrar toast
+  Sparkles // Ícono de confirmación o éxito
 } from 'lucide-react'; // Colección de íconos UI
 
 // IMPORTACIÓN DE TIPOS Y MODELOS DE DATOS DE TYPESCRIPT
@@ -63,6 +67,8 @@ interface HeaderProps {
   // PROPIEDADES DEL GESTOR DE CICLO DE VIDA DE PROYECTOS (PROJECT LIFECYCLE MANAGEMENT)
   projectName?: string; // Nombre editable del proyecto activo
   isDirty?: boolean; // Indicador booleano de cambios sin guardar en el proyecto
+  isSaving?: boolean; // Indicador booleano de guardado en proceso
+  lastSaveStatus?: { destination: string; time: string } | null; // Información de la última operación de guardado
   onProjectNameChange?: (name: string) => void; // Manejador para actualizar el nombre del proyecto
   onNewProject?: () => void; // Disparador para inicializar un proyecto nuevo en blanco
   onOpenProject?: () => void; // Disparador para abrir un proyecto desde archivo local JSON
@@ -87,6 +93,8 @@ export default function Header({
   onSelectSubdivision, // Destructura onSelectSubdivision
   projectName = 'Proyecto Sin Título', // Destructura projectName con título por defecto
   isDirty = false, // Destructura isDirty con false por defecto
+  isSaving = false, // Destructura isSaving con false por defecto
+  lastSaveStatus = null, // Destructura lastSaveStatus
   onProjectNameChange, // Destructura onProjectNameChange
   onNewProject, // Destructura onNewProject
   onOpenProject, // Destructura onOpenProject
@@ -109,6 +117,89 @@ export default function Header({
   const [passwordInput, setPasswordInput] = useState<string>(''); // Estado del campo de contraseña
   const [rememberMe, setRememberMe] = useState<boolean>(false); // Estado del checkbox de recordar sesión
   const [loginError, setLoginError] = useState<string | null>(null); // Estado para almacenar mensajes de error de acceso
+
+  // ESTADO PARA EL MODAL DE CONFIRMACIÓN DE CIERRE CUANDO HAY CAMBIOS SIN GUARDAR
+  const [isCloseConfirmOpen, setIsCloseConfirmOpen] = useState<boolean>(false); // Modal de seguridad al cerrar
+  // ESTADO PARA LA NOTIFICACIÓN TOAST SUTIL DE "TRABAJO GUARDADO" (AUTO-DISMISS EN 3.5 SEGUNDOS)
+  const [saveToast, setSaveToast] = useState<{ show: boolean; message: string; details?: string; timestamp?: string } | null>(null);
+
+  // EFECTO REACTIVO: DISPARA EL TOAST SUTIL CUANDO SE REGISTRA UN GUARDADO EXITOSO
+  React.useEffect(() => {
+    if (lastSaveStatus) {
+      setSaveToast({
+        show: true,
+        message: 'Trabajo guardado correctamente',
+        details: lastSaveStatus.destination || 'Proyecto actualizado',
+        timestamp: lastSaveStatus.time || new Date().toLocaleTimeString()
+      });
+      const timer = setTimeout(() => {
+        setSaveToast(null);
+      }, 3500);
+      return () => clearTimeout(timer);
+    }
+  }, [lastSaveStatus]);
+
+  // ESCUCHA EVENTOS GLOBALES DE GUARDADO
+  React.useEffect(() => {
+    const handleSavedEvent = () => {
+      setSaveToast({
+        show: true,
+        message: 'Trabajo guardado correctamente',
+        details: 'Cambios sincronizados en el proyecto activo',
+        timestamp: new Date().toLocaleTimeString()
+      });
+      const timer = setTimeout(() => {
+        setSaveToast(null);
+      }, 3500);
+      return () => clearTimeout(timer);
+    };
+    window.addEventListener('projectDataSaved', handleSavedEvent);
+    return () => window.removeEventListener('projectDataSaved', handleSavedEvent);
+  }, []);
+
+  // MANEJADOR INTERNO DE CLIC EN BOTÓN GUARDAR
+  const handleSaveClick = async () => {
+    if (onSaveProject) {
+      await onSaveProject();
+      setSaveToast({
+        show: true,
+        message: 'Trabajo guardado correctamente',
+        details: 'Cambios sincronizados en el proyecto activo',
+        timestamp: new Date().toLocaleTimeString()
+      });
+      setTimeout(() => {
+        setSaveToast(null);
+      }, 3500);
+    }
+  };
+
+  // MANEJADOR INTERNO DE CLIC EN BOTÓN CERRAR CON DETECCIÓN DE CAMBIOS SIN GUARDAR
+  const handleCloseClick = () => {
+    if (isDirty) {
+      setIsCloseConfirmOpen(true); // Abre modal de confirmación
+    } else {
+      if (onCloseProject) onCloseProject(); // Cierra de inmediato
+    }
+  };
+
+  // ACCIÓN DE GUARDAR Y CERRAR DESDE EL MODAL
+  const handleConfirmSaveAndClose = async () => {
+    setIsCloseConfirmOpen(false);
+    if (onSaveProject) {
+      await onSaveProject();
+    }
+    if (onCloseProject) {
+      onCloseProject();
+    }
+  };
+
+  // ACCIÓN DE DESCARTAR Y CERRAR SIN GUARDAR
+  const handleConfirmDiscardAndClose = () => {
+    setIsCloseConfirmOpen(false);
+    if (onCloseProject) {
+      onCloseProject();
+    }
+  };
 
   // NODO ACTIVO ACTUAL EXTRAÍDO DINÁMICAMENTE DEL ÚLTIMO ELEMENTO DE NAVIGATIONPATH
   const activeNode = navigationPath && navigationPath.length > 0 ? navigationPath[navigationPath.length - 1] : { id: 'root', name: 'Inicio' }; // Obtiene el nodo terminal
@@ -297,19 +388,31 @@ export default function Header({
             <span className="hidden sm:inline">Abrir</span>
           </button>
 
-          {/* Botón 💾 Guardar Proyecto (Sobreescritura directa In-Place en disco sin diálogos de selección) */}
+          {/* Botón 💾 Guardar Proyecto (Sobreescritura directa In-Place en disco con feedback reactivo de cambios pendientes) */}
           <button
             type="button"
-            onClick={onSaveProject}
-            className={`px-3 py-1 rounded-xl text-[11px] font-black transition-all cursor-pointer flex items-center space-x-1 border ${
+            onClick={handleSaveClick}
+            disabled={isSaving}
+            className={`px-3 py-1 rounded-xl text-[11px] font-black transition-all cursor-pointer flex items-center space-x-1.5 border relative ${
               isDirty 
-                ? 'bg-emerald-500 hover:bg-emerald-400 text-slate-950 border-emerald-400 shadow-md shadow-emerald-950/50 animate-pulse' 
+                ? 'bg-amber-500/20 hover:bg-amber-500/30 text-amber-300 border-amber-500/60 shadow-[0_0_12px_rgba(245,158,11,0.25)]' 
                 : 'bg-slate-800 hover:bg-slate-700 text-slate-200 border-slate-700/80'
-            }`}
-            title="Guardar los cambios sobreescribiendo directamente el archivo .json activo en disco (💾)"
+            } ${isSaving ? 'opacity-70 cursor-wait' : ''}`}
+            title={
+              isDirty 
+                ? "Hay cambios sin guardar (*). Haz clic aquí para guardar los cambios en el proyecto (💾)" 
+                : "Guardar proyecto (💾)"
+            }
           >
-            <Save size={13} className={isDirty ? 'text-slate-950' : 'text-sky-400'} />
+            <Save size={13} className={isDirty ? 'text-amber-400 animate-pulse' : 'text-sky-400'} />
             <span className="hidden sm:inline">Guardar</span>
+            {/* Indicador sutil de cambios pendientes que desaparece al guardar */}
+            {isDirty && (
+              <span 
+                className="w-1.5 h-1.5 rounded-full bg-amber-400 animate-ping ml-0.5" 
+                title="Cambios pendientes sin guardar"
+              />
+            )}
           </button>
 
           {/* Botón 📥 Guardar Como... (Seleccionar nueva ubicación o descargar archivo nuevo) */}
@@ -336,10 +439,10 @@ export default function Header({
             </button>
           )}
 
-          {/* Botón ❌ Cerrar Proyecto */}
+          {/* Botón ❌ Cerrar Proyecto (Con detección de seguridad si hay cambios sin guardar) */}
           <button
             type="button"
-            onClick={onCloseProject}
+            onClick={handleCloseClick}
             className="px-2.5 py-1 bg-slate-800 hover:bg-rose-950/80 text-rose-300 hover:text-rose-200 rounded-xl text-[11px] font-bold transition-all cursor-pointer flex items-center space-x-1 border border-slate-700/80 hover:border-rose-800/80"
             title="Cerrar el proyecto activo y desvincular el archivo de disco (❌)"
           >
@@ -829,6 +932,83 @@ export default function Header({
             );
           })}
         </nav>
+      )}
+
+      {/* NOTIFICACIÓN TOAST FLOTANTE SUTIL: TRABAJO GUARDADO EXITOSAMENTE (AUTO-DISMISS EN 3.5s) */}
+      {saveToast?.show && (
+        <div className="fixed top-16 left-1/2 -translate-x-1/2 z-50 animate-in fade-in slide-in-from-top-3 duration-300 pointer-events-auto">
+          <div className="bg-slate-900/95 text-slate-100 border border-emerald-500/50 rounded-2xl px-4 py-2.5 shadow-2xl shadow-emerald-950/70 flex items-center space-x-3 backdrop-blur-md">
+            <div className="w-7 h-7 rounded-xl bg-emerald-500/20 border border-emerald-500/50 flex items-center justify-center shrink-0 text-emerald-400 shadow-[0_0_10px_rgba(16,185,129,0.3)]">
+              <CheckCircle2 size={16} />
+            </div>
+            <div>
+              <p className="text-xs font-black text-slate-100 flex items-center gap-2">
+                {saveToast.message}
+                {saveToast.timestamp && (
+                  <span className="text-[10px] font-normal text-emerald-400 font-mono">({saveToast.timestamp})</span>
+                )}
+              </p>
+              <p className="text-[11px] text-slate-400">
+                {saveToast.details || 'Todos los cambios fueron guardados y sincronizados correctamente.'}
+              </p>
+            </div>
+            <button
+              type="button"
+              onClick={() => setSaveToast(null)}
+              className="text-slate-500 hover:text-slate-200 p-1 rounded-lg hover:bg-slate-800 transition-all cursor-pointer ml-1"
+              title="Cerrar notificación"
+            >
+              <X size={13} />
+            </button>
+          </div>
+        </div>
+      )}
+
+      {/* MODAL DE CONFIRMACIÓN DE SEGURIDAD: CAMBIOS SIN GUARDAR AL CERRAR */}
+      {isCloseConfirmOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/80 backdrop-blur-xs p-4 animate-in fade-in duration-200">
+          <div className="bg-slate-900 border border-slate-700/80 rounded-2xl max-w-md w-full p-6 shadow-2xl shadow-black/80 space-y-4 text-slate-100">
+            <div className="flex items-start space-x-3">
+              <div className="w-10 h-10 rounded-xl bg-amber-500/10 border border-amber-500/30 flex items-center justify-center shrink-0 text-amber-400">
+                <AlertTriangle size={20} />
+              </div>
+              <div className="flex-1">
+                <h3 className="text-sm font-black text-slate-100">
+                  ¿Deseas guardar los cambios antes de cerrar?
+                </h3>
+                <p className="text-xs text-slate-400 mt-1.5 leading-relaxed">
+                  Tienes modificaciones sin guardar en el proyecto <span className="font-bold text-amber-300">"{projectName}"</span>. Si cierras ahora sin guardar, se perderán los cambios realizados.
+                </p>
+              </div>
+            </div>
+
+            <div className="flex flex-col sm:flex-row gap-2 pt-3 border-t border-slate-800/80">
+              <button
+                type="button"
+                onClick={handleConfirmSaveAndClose}
+                className="flex-1 py-2 px-3 bg-emerald-600 hover:bg-emerald-500 text-slate-950 font-black rounded-xl text-xs flex items-center justify-center space-x-1.5 transition-all shadow-md shadow-emerald-950/50 cursor-pointer"
+              >
+                <Save size={14} />
+                <span>Guardar y Cerrar</span>
+              </button>
+              <button
+                type="button"
+                onClick={handleConfirmDiscardAndClose}
+                className="py-2 px-3 bg-rose-500/10 hover:bg-rose-500/20 text-rose-300 hover:text-rose-200 border border-rose-500/30 font-bold rounded-xl text-xs flex items-center justify-center space-x-1.5 transition-all cursor-pointer"
+              >
+                <Trash2 size={13} />
+                <span>Descartar y Salir</span>
+              </button>
+              <button
+                type="button"
+                onClick={() => setIsCloseConfirmOpen(false)}
+                className="py-2 px-3 bg-slate-800 hover:bg-slate-700 text-slate-300 font-bold rounded-xl text-xs transition-all cursor-pointer"
+              >
+                Cancelar
+              </button>
+            </div>
+          </div>
+        </div>
       )}
     </header>
   ); // Fin del return de JSX

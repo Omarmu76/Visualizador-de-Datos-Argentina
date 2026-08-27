@@ -413,6 +413,21 @@ export const useProjectManager = (
     }
   };
 
+  // 8.2 CARGAR PROYECTO DESDE PAYLOAD LOCAL (JSON)
+  const handleLoadLocalPayload = (payload: any, filename?: string) => {
+    if (isDirty && !window.confirm('Tienes cambios sin guardar. ¿Deseas descartarlos para abrir este archivo local?')) {
+      return;
+    }
+    onLoadData(payload);
+    const cleanName = (payload?.name || payload?.projectName || filename || 'Proyecto Local').replace(/\.json$/i, '');
+    setProjectName(cleanName);
+    setProjectId(payload?.id || payload?.metadata?.projectId || null);
+    setDriveFileId(payload?.metadata?.driveFileId || null);
+    setFileHandle(null);
+    setIsDirty(false);
+    setLastSaveStatus({ destination: `Local: ${cleanName}`, time: new Date().toLocaleTimeString() });
+  };
+
   // 9. CERRAR PROYECTO
   const handleClose = () => {
     if (isDirty && !window.confirm('Tienes cambios sin guardar. ¿Seguro que deseas cerrar el proyecto?')) {
@@ -453,6 +468,7 @@ export const useProjectManager = (
     handleSaveToDrive,
     handleSaveToDisk,
     handleLoadFromDatabase,
-    handleLoadFromGoogleDrive
+    handleLoadFromGoogleDrive,
+    handleLoadLocalPayload
   };
 };

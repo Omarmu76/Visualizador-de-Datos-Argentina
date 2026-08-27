@@ -34,6 +34,8 @@ import {
   HardDriveDownload,
   Info
 } from 'lucide-react';
+import { getMultiplePathsBBox } from '../lib/mapUtils'; // Cálculo de Bounding Box para encuadre SVG automático
+import { extractPathsFromPayload, ExtractedMapPath } from './MapVisualComparisonPreview'; // Extractor vectorial de proyectos
 
 // ============================================================================
 // 1. MODELO DE DATOS UNIFICADO (UniversalFileItem)
@@ -55,6 +57,7 @@ export interface UniversalFileItem {
   updatedAt?: string; // Fecha de última modificación (ISO string o legible)
   thumbnailUrl?: string; // URL opcional de miniatura (Drive thumbnailLink, URL.createObjectURL local o imagen en base64)
   svgThumbnailPreview?: string; // Trazado o SVG inline opcional para mapas vectoriales
+  extractedPaths?: ExtractedMapPath[]; // Trazados vectoriales precalculados para renderizado de miniatura
   description?: string; // Descripción opcional o categoría
   webViewLink?: string; // Enlace externo directo a Google Drive u otro visor
   originalPayload?: any; // Payload original completo para carga directa
@@ -155,6 +158,112 @@ export const UniversalFileViewer: React.FC<UniversalFileViewerProps> = ({
     }
   };
 
+// Subcomponente especializado para renderizar miniaturas vectoriales de mapas en alta definición
+const MapVectorCardThumbnail: React.FC<{ item: UniversalFileItem }> = ({ item }) => {
+  // Extrae y memoiza los trazados desde extractedPaths, originalPayload o svgThumbnailPreview
+  const { paths, count } = useMemo(() => {
+    // 1. Si ya vienen pre-extraídos
+    if (item.extractedPaths && item.extractedPaths.length > 0) {
+      return { paths: item.extractedPaths, count: item.extractedPaths.length };
+    }
+    // 2. Si viene el payload completo del proyecto
+    if (item.originalPayload) {
+      const extracted = extractPathsFromPayload(item.originalPayload);
+      if (extracted && extracted.paths && extracted.paths.length > 0) {
+        return { paths: extracted.paths, count: extracted.paths.length };
+      }
+    }
+    // 3. Si viene una ruta SVG única de previsualización
+    if (item.svgThumbnailPreview) {
+      return {
+        paths: [{ id: 'p0', name: item.name, d: item.svgThumbnailPreview, fill: '#38bdf8' }],
+        count: 1
+      };
+    }
+    return { paths: [], count: 0 };
+  }, [item.extractedPaths, item.originalPayload, item.svgThumbnailPreview, item.name]);
+
+  // Calcula el viewBox adaptado automáticamente a las dimensiones reales de los polígonos
+  const viewBox = useMemo(() => {
+    if (!paths || paths.length === 0) return '0 0 1000 1000';
+    const bbox = getMultiplePathsBBox(paths, { x: 0, y: 0, width: 1000, height: 1000 });
+    const paddingX = Math.max(12, bbox.width * 0.05);
+    const paddingY = Math.max(12, bbox.height * 0.05);
+    const vx = bbox.x - paddingX;
+    const vy = bbox.y - paddingY;
+    const vw = Math.max(1, bbox.width + paddingX * 2);
+    const vh = Math.max(1, bbox.height + paddingY * 2);
+    return `${vx} ${vy} ${vw} ${vh}`;
+  }, [paths]);
+
+  // Paleta armónica de colores pasteles para diferenciar polígonos / países / provincias (estilo visual auténtico)
+  const MAP_PALETTE = [
+    '#fde047', '#86efac', '#fed7aa', '#f472b6', '#7dd3fc',
+    '#c4b5fd', '#fca5a5', '#99f6e4', '#fdba74', '#a7f3d0',
+    '#fbcfe8', '#cbd5e1', '#e9d5ff', '#bbf7d0', '#bae6fd'
+  ];
+
+  // Si no hay trazados vectoriales, fallback limpio al icono .JSON MAP clásico
+  if (paths.length === 0) {
+    return (
+      <div className="w-full h-full flex flex-col items-center justify-center bg-sky-500/5 group-hover:bg-sky-500/10 transition-colors">
+        <div className="p-2.5 rounded-xl bg-sky-950/60 border border-sky-500/20 text-sky-400">
+          <FileCode size={28} />
+        </div>
+        <span className="text-[9px] font-mono text-sky-400/80 font-bold mt-1 uppercase">.JSON MAP</span>
+      </div>
+    );
+  }
+
+  return (
+    <div className="w-full h-full relative overflow-hidden bg-[#060911] flex items-center justify-center p-2 select-none">
+      {/* Rejilla decorativa de fondo blueprint / mapa */}
+      <div
+        className="absolute inset-0 opacity-25 pointer-events-none"
+        style={{
+          backgroundImage: `radial-gradient(rgba(56, 189, 248, 0.4) 1px, transparent 1px)`,
+          backgroundSize: '10px 10px'
+        }}
+      />
+
+      {/* Renderizado vectorial SVG del mapa completo con polígonos coloreados */}
+      <svg
+        viewBox={viewBox}
+        className="w-full h-full max-h-24 drop-shadow-[0_2px_8px_rgba(0,0,0,0.7)] transition-transform duration-300 group-hover:scale-105"
+      >
+        {paths.map((p, idx) => {
+          const color = p.fill || MAP_PALETTE[idx % MAP_PALETTE.length];
+          return (
+            <path
+              key={p.id || idx}
+              d={p.d}
+              fill={color}
+              fillOpacity={0.78}
+              stroke="#0f172a"
+              strokeWidth={0.75}
+              strokeLinejoin="round"
+            >
+              <title>{p.name || `Porción ${idx + 1}`}</title>
+            </path>
+          );
+        })}
+      </svg>
+
+      {/* Insignia .JSON MAP con icono de código en la esquina superior derecha (conservado tal como solicitó el usuario) */}
+      <div className="absolute top-1.5 right-1.5 bg-slate-950/90 backdrop-blur-xs border border-sky-500/30 text-sky-300 font-mono text-[8.5px] font-bold px-1.5 py-0.5 rounded-md flex items-center space-x-1 shadow-sm pointer-events-none">
+        <FileCode size={10} className="text-sky-400" />
+        <span>.JSON MAP</span>
+      </div>
+
+      {/* Contador de porciones/polígonos en esquina inferior izquierda */}
+      <div className="absolute bottom-1.5 left-1.5 bg-slate-950/90 backdrop-blur-xs border border-slate-800 text-slate-300 font-mono text-[8.5px] px-1.5 py-0.5 rounded-md flex items-center space-x-1 shadow-xs pointer-events-none">
+        <Layers size={9} className="text-sky-400" />
+        <span><strong>{count}</strong> {count === 1 ? 'polígono' : 'polígonos'}</span>
+      </div>
+    </div>
+  );
+};
+
   // Renderizador del icono o miniatura visual
   const renderThumbnail = (item: UniversalFileItem) => {
     // 1. Si es una carpeta (Folder)
@@ -185,35 +294,13 @@ export const UniversalFileViewer: React.FC<UniversalFileViewerProps> = ({
       );
     }
 
-    // 3. Si tiene previsualización vectorial inline (SVG Path)
-    if (item.svgThumbnailPreview) {
-      return (
-        <div className="w-full h-full relative overflow-hidden bg-slate-950/80 p-2 flex items-center justify-center">
-          <svg viewBox="0 0 100 100" className="w-full h-full max-h-20 text-sky-400 opacity-85">
-            <path
-              d={item.svgThumbnailPreview}
-              fill="currentColor"
-              fillOpacity="0.2"
-              stroke="currentColor"
-              strokeWidth="1"
-            />
-          </svg>
-        </div>
-      );
+    // 3. Si es un mapa o archivo JSON con datos vectoriales, renderizamos la miniatura vectorial gráfica
+    if (item.type === 'map' || item.type === 'json' || item.originalPayload || item.svgThumbnailPreview || item.extractedPaths) {
+      return <MapVectorCardThumbnail item={item} />;
     }
 
     // 4. Fallback temático según extensión/tipo con iconografía moderna
     switch (item.type) {
-      case 'json':
-      case 'map':
-        return (
-          <div className="w-full h-full flex flex-col items-center justify-center bg-sky-500/5 group-hover:bg-sky-500/10 transition-colors">
-            <div className="p-2.5 rounded-xl bg-sky-950/60 border border-sky-500/20 text-sky-400">
-              <FileCode size={28} />
-            </div>
-            <span className="text-[9px] font-mono text-sky-400/80 font-bold mt-1 uppercase">.JSON MAP</span>
-          </div>
-        );
       case 'image':
         return (
           <div className="w-full h-full flex flex-col items-center justify-center bg-rose-500/5 group-hover:bg-rose-500/10 transition-colors">
