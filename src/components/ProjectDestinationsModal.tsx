@@ -192,11 +192,67 @@ export const ProjectDestinationsModal: React.FC<ProjectDestinationsModalProps> =
     }
   };
 
-  // Inicia sesión rápida con Google para conectar Google Drive
+  // Inicia sesión rápida con Google para conectar Google Drive mediante Google Identity Services / Firebase Auth
   const handleGoogleConnect = async (): Promise<boolean> => {
     setIsBusy(true);
     setStatusMessage({ text: 'Abriendo autenticación segura de Google Workspace...', type: 'info' });
     try {
+      // 1. Intentar primero con Google Identity Services (GSI) Token Client nativo si está disponible
+      const clientId = '946216523835-f9l094tg5l35vbamebk5ghlj1spo3qro.apps.googleusercontent.com';
+      if (typeof window !== 'undefined' && (window as any).google?.accounts?.oauth2) {
+        const tokenPromise = new Promise<{ token: string; email?: string }>((resolve, reject) => {
+          try {
+            const tokenClient = (window as any).google.accounts.oauth2.initTokenClient({
+              client_id: clientId,
+              scope: 'https://www.googleapis.com/auth/drive.file https://www.googleapis.com/auth/userinfo.profile https://www.googleapis.com/auth/userinfo.email',
+              callback: async (resp: any) => {
+                if (resp.error) {
+                  reject(new Error(resp.error_description || resp.error));
+                  return;
+                }
+                if (resp.access_token) {
+                  let userEmail: string | undefined;
+                  try {
+                    // Obtiene el perfil básico para mostrar el email del usuario conectado
+                    const profileRes = await fetch('https://www.googleapis.com/oauth2/v2/userinfo', {
+                      headers: { Authorization: `Bearer ${resp.access_token}` }
+                    });
+                    if (profileRes.ok) {
+                      const profileData = await profileRes.json();
+                      userEmail = profileData.email;
+                    }
+                  } catch (errProfile) {
+                    console.warn('No se pudo obtener el email de perfil:', errProfile);
+                  }
+                  resolve({ token: resp.access_token, email: userEmail });
+                } else {
+                  reject(new Error('No se recibió token de acceso en la respuesta de Google.'));
+                }
+              }
+            });
+            tokenClient.requestAccessToken({ prompt: 'consent select_account' });
+          } catch (initErr) {
+            reject(initErr);
+          }
+        });
+
+        const authResult = await tokenPromise;
+        if (authResult?.token) {
+          localStorage.setItem('gdrive_access_token', authResult.token);
+          sessionStorage.setItem('gdrive_access_token', authResult.token);
+          if (authResult.email) {
+            localStorage.setItem('gdrive_user_email', authResult.email);
+            setGoogleUserEmail(authResult.email);
+          }
+          (window as any).__GOOGLE_WORKSPACE_ACCESS_TOKEN__ = authResult.token;
+          setHasGoogleAuth(true);
+          setStatusMessage({ text: `✓ Conexión exitosa con Google Drive (${authResult.email || 'Cuenta Google'}).`, type: 'success' });
+          await loadDriveProjectsList();
+          return true;
+        }
+      }
+
+      // 2. Si GSI no está listo, utilizar el flujo de Firebase Auth Popup estándar
       const provider = new GoogleAuthProvider();
       // Scopes requeridos para guardar, leer y gestionar archivos en Google Drive
       provider.addScope('https://www.googleapis.com/auth/drive.file');

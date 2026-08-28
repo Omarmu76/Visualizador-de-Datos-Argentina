@@ -859,6 +859,8 @@ export default function AdvancedCanvasEditor({
 
   // Estado para desplegar el menú de recuperación de blindaje territorial
   const [isSafetyRecoveryMenuOpen, setIsSafetyRecoveryMenuOpen] = useState<boolean>(false);
+  // Estado para el menú desplegable ordenado de herramientas de archivo e I/O
+  const [isExtraFileMenuOpen, setIsExtraFileMenuOpen] = useState<boolean>(false);
 
   // FUNCIÓN MEJORADA PARA ASOCIAR Y GUARDAR/COMBINAR EN OTRA RUTA O PROVINCIA
   const handleAssociateMapToSelectedRoute = (targetRouteId: string) => { // Función principal de asociación a ruta
@@ -4321,104 +4323,60 @@ export default function AdvancedCanvasEditor({
           </div>
         </div>
 
-        {/* ACCIONES RBAC Y BOTONERA DE CONTROL */}
+        {/* ACCIONES RBAC Y BOTONERA DE CONTROL AGRUPADA Y LIMPIA */}
         <div className="flex items-center space-x-2 flex-wrap">
-          {/* Agrupar selección o mapa en nueva rama / continente */}
+          {/* BOTÓN PRINCIPAL: AGREGAR NUEVO ELEMENTO / TERRITORIO / FIGURA */}
           <button
-            onClick={() => handleGroupSelectionIntoContinent()}
+            type="button"
+            onClick={() => setIsAddElementModalOpen(true)}
             disabled={!canEditMap}
-            className="py-1.5 px-3 bg-indigo-600/30 hover:bg-indigo-600/50 text-indigo-200 border border-indigo-500/50 rounded-xl text-xs font-bold transition-all cursor-pointer flex items-center space-x-1.5 shadow-md shadow-indigo-950/40"
-            title="Agrupar los trazados seleccionados en una nueva rama/continente (ej: América del Sur, Europa)"
+            className="py-1.5 px-3 bg-gradient-to-r from-emerald-500 via-teal-400 to-cyan-400 hover:from-emerald-400 hover:to-cyan-300 text-slate-950 font-black rounded-xl text-xs uppercase tracking-wider transition-all cursor-pointer flex items-center space-x-1.5 shadow-md shadow-emerald-950/40 hover:scale-105 active:scale-95"
+            title="Agregar nuevo elemento, isla, territorio, miembro o figura sin reemplazar nada"
           >
-            <Globe size={13} className="text-indigo-400" />
-            <span>Crear Rama Continente</span>
+            <Plus size={14} className="stroke-[3]" />
+            <span>➕ Agregar Elemento</span>
           </button>
 
-          {/* Recargar trazados contextuales */}
+          {/* GUARDAR / APLICAR CAMBIOS GLOBALES */}
           <button
-            onClick={handleReloadContextualVectors}
-            className="py-1.5 px-3 bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-700 rounded-xl text-xs font-bold transition-all cursor-pointer flex items-center space-x-1.5"
-            title="Cargar o resetear los trazados vectoriales nativos de esta región"
-          >
-            <RefreshCw size={13} className="text-emerald-400" />
-            <span>Recargar Vectores Nativos</span>
-          </button>
-
-          {/* Subir archivo SVG / JSON directo */}
-          <button
-            onClick={() => fileInputRef.current?.click()}
+            onClick={handleSaveMapToApp}
             disabled={!canEditMap}
-            className="py-1.5 px-3 bg-slate-800 hover:bg-slate-700 disabled:opacity-40 text-slate-200 border border-slate-700 rounded-xl text-xs font-bold transition-all cursor-pointer flex items-center space-x-1.5"
+            className={`py-1.5 px-3 disabled:opacity-40 font-black rounded-xl text-xs uppercase tracking-wider transition-all cursor-pointer flex items-center space-x-1.5 shadow-md ${
+              hasPendingChanges
+                ? 'bg-emerald-500 hover:bg-emerald-400 text-slate-950 shadow-emerald-500/30 ring-2 ring-emerald-400/50 animate-pulse'
+                : 'bg-slate-800 hover:bg-slate-750 text-emerald-400 border border-slate-700'
+            }`}
+            title="Aplica todos los cambios y sincroniza el mapa con la aplicación"
           >
-            <FileUp size={13} className="text-sky-400" />
-            <span>Subir Archivo .json/.svg</span>
+            <Save size={13} />
+            <span>{hasPendingChanges ? 'Guardar Cambios' : 'Guardar'}</span>
           </button>
-          <input
-            type="file"
-            ref={fileInputRef}
-            onChange={handleFileUpload}
-            accept=".json,.svg"
-            className="hidden"
-          />
 
-          {/* Si el mapa es del Sistema y el usuario es Pro (no Admin), ofrecer opción de clonar */}
-          {currentUser.role === 'pro' && mapEntity.ownerId === 'system' && (
+          {/* DESCARTAR CAMBIOS SI HAY PENDIENTES */}
+          {hasPendingChanges && (
             <button
-              onClick={handleCloneAsProUser}
-              className="py-1.5 px-3 bg-amber-500/20 hover:bg-amber-500/30 text-amber-300 border border-amber-500/40 rounded-xl text-xs font-bold transition-all cursor-pointer flex items-center space-x-1.5"
-              title="Clonar mapa del sistema para editar tu propia copia"
+              type="button"
+              onClick={handleCancelUnsavedChanges}
+              disabled={!canEditMap}
+              className="py-1.5 px-2.5 bg-rose-950/60 hover:bg-rose-900/80 disabled:opacity-40 text-rose-200 border border-rose-500/40 rounded-xl text-xs font-bold transition-all cursor-pointer flex items-center space-x-1 shadow-xs"
+              title="Descarta todos los cambios no guardados y vuelve al estado original"
             >
-              <Copy size={13} />
-              <span>Clonar para Editar (Pro)</span>
+              <RotateCcw size={12} className="text-rose-400" />
+              <span className="hidden sm:inline">Descartar</span>
             </button>
           )}
 
-          {/* Botón de aprobación del Super Admin */}
-          {currentUser.role === 'admin' && (
-            <button
-              onClick={handleApproveMapByAdmin}
-              className={`py-1.5 px-3 rounded-xl text-xs font-bold border transition-all cursor-pointer flex items-center space-x-1.5 ${
-                mapEntity.isApproved 
-                  ? 'bg-emerald-500/20 text-emerald-300 border-emerald-500/40 hover:bg-emerald-500/30' 
-                  : 'bg-red-500/20 text-red-300 border-red-500/40 hover:bg-red-500/30'
-              }`}
-            >
-              <ShieldCheck size={13} />
-              <span>{mapEntity.isApproved ? 'Aprobado (Desmarcar)' : 'Aprobar Mapa'}</span>
-            </button>
-          )}
-
-          {/* Cargar JSON Modal */}
-          <button
-            onClick={() => setShowJsonImportModal(true)}
-            disabled={!canEditMap}
-            className="py-1.5 px-3 bg-slate-800 hover:bg-slate-700 disabled:opacity-40 text-slate-200 border border-slate-700 rounded-xl text-xs font-bold transition-all cursor-pointer flex items-center space-x-1.5"
-          >
-            <Upload size={13} />
-            <span>Pegar JSON</span>
-          </button>
-
-          {/* Exportar JSON */}
-          <button
-            onClick={handleExportJsonFile}
-            className="py-1.5 px-3 bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-700 rounded-xl text-xs font-bold transition-all cursor-pointer flex items-center space-x-1.5"
-          >
-            <Download size={13} />
-            <span>Exportar</span>
-          </button>
-
-          {/* GRUPO DE ACCIONES DE HISTORIAL (DESHACER / REHACER / MENÚ HISTORIAL) */}
-          <div className="flex items-center space-x-1 border-l border-r border-slate-800 px-2 my-0.5">
+          {/* GRUPO DE ACCIONES DE HISTORIAL (DESHACER / REHACER / VISUAL) */}
+          <div className="flex items-center bg-slate-950 border border-slate-800 rounded-xl p-0.5 space-x-0.5 shadow-inner">
             {/* BOTÓN DESHACER (UNDO) */}
             <button
               type="button"
               onClick={handleUndo}
               disabled={!canEditMap || historyIndex <= 0}
-              className="py-1.5 px-2 bg-slate-800 hover:bg-slate-700 disabled:opacity-30 text-slate-200 border border-slate-700 rounded-xl text-xs font-bold transition-all cursor-pointer flex items-center space-x-1"
+              className="p-1.5 hover:bg-slate-900 disabled:opacity-30 text-slate-200 rounded-lg text-xs font-bold transition-all cursor-pointer flex items-center"
               title="Deshacer acción (Ctrl + Z)"
             >
               <Undo2 size={13} className="text-amber-400" />
-              <span className="hidden md:inline text-[11px]">Deshacer</span>
             </button>
 
             {/* BOTÓN REHACER (REDO) */}
@@ -4426,42 +4384,39 @@ export default function AdvancedCanvasEditor({
               type="button"
               onClick={handleRedo}
               disabled={!canEditMap || historyIndex >= historyStack.length - 1}
-              className="py-1.5 px-2 bg-slate-800 hover:bg-slate-700 disabled:opacity-30 text-slate-200 border border-slate-700 rounded-xl text-xs font-bold transition-all cursor-pointer flex items-center space-x-1"
+              className="p-1.5 hover:bg-slate-900 disabled:opacity-30 text-slate-200 rounded-lg text-xs font-bold transition-all cursor-pointer flex items-center"
               title="Rehacer acción (Ctrl + Y o Ctrl + Shift + Z)"
             >
               <Redo2 size={13} className="text-sky-400" />
-              <span className="hidden md:inline text-[11px]">Rehacer</span>
             </button>
 
-            {/* MENÚ FLOTANTE GESTOR DE HISTORIAL Y LIMPIEZA */}
-            <div className="relative">
-              {/* BOTÓN HISTORIAL VISUAL ANTIGRAVITY (TIMELINE CON PREVIEWS Y RESTAURACIÓN) */}
-              <button
-                type="button"
-                onClick={() => setIsVisualHistoryModalOpen(true)}
-                className="py-1.5 px-2.5 rounded-xl text-xs font-bold border transition-all cursor-pointer flex items-center space-x-1.5 bg-indigo-950/60 hover:bg-indigo-900/80 text-indigo-300 border-indigo-500/40 shadow-sm"
-                title="Abrir Historial Visual de Versiones estilo Antigravity (previsualización, diff y restauración)"
-              >
-                <History size={13} className="text-indigo-400" />
-                <span>Historial Visual</span>
-                <span className="text-[10px] bg-slate-950 px-1.5 py-0.5 rounded-full text-indigo-300 font-extrabold border border-indigo-500/30">
-                  {historyStack.length}
-                </span>
-              </button>
+            <div className="w-px h-3.5 bg-slate-800 mx-0.5" />
 
+            {/* BOTÓN HISTORIAL VISUAL ANTIGRAVITY */}
+            <button
+              type="button"
+              onClick={() => setIsVisualHistoryModalOpen(true)}
+              className="px-2 py-1 bg-indigo-950/60 hover:bg-indigo-900/80 text-indigo-300 rounded-lg text-xs font-bold transition-all cursor-pointer flex items-center space-x-1"
+              title="Abrir Historial Visual de Versiones estilo Antigravity (previsualización, diff y restauración)"
+            >
+              <History size={12} className="text-indigo-400" />
+              <span className="hidden md:inline text-[11px]">Historial</span>
+              <span className="text-[9px] bg-slate-950 px-1 py-0.2 rounded text-indigo-300 font-extrabold border border-indigo-500/30">
+                {historyStack.length}
+              </span>
+            </button>
+
+            {/* BOTÓN CONTEXTUAL LISTA RÁPIDA DE PASOS */}
+            <div className="relative">
               <button
                 type="button"
                 onClick={() => setIsHistoryMenuOpen(!isHistoryMenuOpen)}
-                className={`py-1.5 px-2 rounded-xl text-xs font-bold border transition-all cursor-pointer flex items-center space-x-1 ${
-                  isHistoryMenuOpen 
-                    ? 'bg-amber-500/20 text-amber-300 border-amber-500/40' 
-                    : 'bg-slate-800 hover:bg-slate-700 text-slate-300 border-slate-700'
+                className={`p-1 px-1.5 rounded-lg text-xs font-bold transition-all cursor-pointer flex items-center ${
+                  isHistoryMenuOpen ? 'bg-amber-500/20 text-amber-300' : 'hover:bg-slate-900 text-slate-400'
                 }`}
                 title="Ver lista rápida de pasos y gestionar memoria"
               >
-                <span className="text-[10px] text-slate-400 font-mono">
-                  {historyStack.length > 0 ? `${historyIndex + 1}/${historyStack.length}` : '0'}
-                </span>
+                <ChevronDown size={12} />
               </button>
 
               {/* DESPLEGABLE CON LISTA DE HISTORIAL Y LIMPIEZA */}
@@ -4537,88 +4492,172 @@ export default function AdvancedCanvasEditor({
             </div>
           </div>
 
-          {/* INDICADOR DE CAMBIOS PENDIENTES */}
-          {hasPendingChanges && (
-            <div className="hidden lg:flex items-center space-x-1.5 px-2.5 py-1 bg-amber-500/10 border border-amber-500/30 rounded-xl text-amber-300 text-[11px] font-bold animate-pulse">
-              <span className="w-2 h-2 rounded-full bg-amber-400"></span>
-              <span>Cambios pendientes</span>
-            </div>
-          )}
-
-          {/* ALERTA / BOTÓN RESTAURACIÓN RÁPIDA DE ISLAS MALVINAS SI NO ESTÁN EN EL MAPA */}
-          {isMalvinasMissing && canEditMap && (
+          {/* MENÚ DESPLEGABLE CONSOLIDADO: ARCHIVOS & HERRAMIENTAS AVANZADAS */}
+          <div className="relative">
             <button
               type="button"
-              onClick={handleQuickRestoreMalvinas}
-              className="hidden md:flex py-1.5 px-3 bg-amber-500/20 hover:bg-amber-500/30 border border-amber-500/50 text-amber-300 rounded-xl text-xs font-bold transition-all cursor-pointer items-center space-x-1.5 shadow-md hover:scale-105"
-              title="Las Islas Malvinas no están en este mapa. Haz clic para restaurarlas automáticamente en 1 clic."
+              onClick={() => setIsExtraFileMenuOpen(!isExtraFileMenuOpen)}
+              className={`py-1.5 px-3 rounded-xl text-xs font-bold border transition-all cursor-pointer flex items-center space-x-1.5 ${
+                isExtraFileMenuOpen
+                  ? 'bg-slate-800 text-slate-100 border-slate-600'
+                  : 'bg-slate-900 hover:bg-slate-800 text-slate-300 border-slate-700'
+              }`}
+              title="Menú de importación, exportación, asociación y herramientas avanzadas de trazados"
             >
-              <Sparkles size={13} className="text-amber-400 animate-spin" />
-              <span>Restaurar Malvinas</span>
+              <FileCode size={13} className="text-sky-400" />
+              <span>Herramientas & Archivos</span>
+              <ChevronDown size={12} className={`text-slate-400 transition-transform ${isExtraFileMenuOpen ? 'rotate-180' : ''}`} />
             </button>
-          )}
 
-          {/* BOTÓN PRINCIPAL: AGREGAR NUEVO ELEMENTO / TERRITORIO / MIEMBRO */}
-          <button
-            type="button"
-            onClick={() => setIsAddElementModalOpen(true)}
-            disabled={!canEditMap}
-            className="py-1.5 px-3.5 bg-gradient-to-r from-emerald-500 via-teal-400 to-cyan-400 hover:from-emerald-400 hover:to-cyan-300 text-slate-950 font-black rounded-xl text-xs uppercase tracking-wider transition-all cursor-pointer flex items-center space-x-1.5 shadow-lg shadow-emerald-950/50 hover:scale-105 active:scale-95"
-            title="Agregar nuevo elemento, isla, territorio, miembro o figura sin reemplazar nada"
-          >
-            <Plus size={14} className="stroke-[3]" />
-            <span>➕ Agregar Elemento</span>
-          </button>
+            {isExtraFileMenuOpen && (
+              <div
+                onClick={(e) => e.stopPropagation()}
+                className="absolute right-0 mt-2 w-64 bg-slate-950 border border-slate-800 rounded-2xl shadow-2xl p-2 space-y-1 z-50 animate-fadeIn text-left text-xs"
+              >
+                <div className="flex items-center justify-between border-b border-slate-800 pb-1 px-1.5">
+                  <span className="text-[10px] text-slate-400 font-bold uppercase tracking-wider">
+                    Herramientas de Mapa
+                  </span>
+                  <button onClick={() => setIsExtraFileMenuOpen(false)} className="p-1 hover:bg-slate-800 rounded text-slate-400">
+                    <X size={12} />
+                  </button>
+                </div>
 
-          {/* BOTÓN DE CANCELAR SIN GUARDAR (DESCARTAR CAMBIOS Y REVERTIR AL ESTADO INICIAL) */}
-          <button
-            type="button"
-            onClick={handleCancelUnsavedChanges}
-            disabled={!canEditMap}
-            className="py-1.5 px-3 bg-rose-950/60 hover:bg-rose-900/80 disabled:opacity-40 text-rose-200 border border-rose-500/40 rounded-xl text-xs font-bold transition-all cursor-pointer flex items-center space-x-1.5 shadow-md shadow-rose-950/40"
-            title="Descarca todos los cambios no guardados y vuelve al estado original"
-          >
-            <RotateCcw size={13} className="text-rose-400" />
-            <span>Descartar Cambios</span>
-          </button>
+                {/* Subir archivo SVG / JSON */}
+                <button
+                  type="button"
+                  onClick={() => {
+                    setIsExtraFileMenuOpen(false);
+                    fileInputRef.current?.click();
+                  }}
+                  disabled={!canEditMap}
+                  className="w-full text-left p-2 rounded-xl hover:bg-slate-900 text-slate-200 flex items-center space-x-2 transition-colors disabled:opacity-40 cursor-pointer"
+                >
+                  <FileUp size={14} className="text-sky-400" />
+                  <span>Subir Archivo .json / .svg</span>
+                </button>
 
-          {/* Guardar cambios globales / Aplicar Cambios */}
-          <button
-            onClick={handleSaveMapToApp}
-            disabled={!canEditMap}
-            className={`py-1.5 px-3.5 disabled:opacity-40 font-black rounded-xl text-xs uppercase tracking-wider transition-all cursor-pointer flex items-center space-x-1.5 shadow-lg ${
-              hasPendingChanges
-                ? 'bg-emerald-500 hover:bg-emerald-400 text-slate-950 shadow-emerald-500/30 ring-2 ring-emerald-400/50'
-                : 'bg-emerald-600 hover:bg-emerald-500 text-slate-950 shadow-emerald-950/40'
-            }`}
-            title="Aplica todos los cambios y sincroniza el mapa con la aplicación"
-          >
-            <Save size={13} />
-            <span>Aplicar Cambios</span>
-          </button>
+                {/* Pegar JSON */}
+                <button
+                  type="button"
+                  onClick={() => {
+                    setIsExtraFileMenuOpen(false);
+                    setShowJsonImportModal(true);
+                  }}
+                  disabled={!canEditMap}
+                  className="w-full text-left p-2 rounded-xl hover:bg-slate-900 text-slate-200 flex items-center space-x-2 transition-colors disabled:opacity-40 cursor-pointer"
+                >
+                  <Upload size={14} className="text-emerald-400" />
+                  <span>Pegar o Editar JSON Directo</span>
+                </button>
 
-          {/* BOTÓN ASOCIAR MAPA COMPLETO A OTRA RUTA O PROVINCIA */}
-          <button
-            type="button"
-            onClick={() => setIsAssociateModalOpen(true)}
-            disabled={!canEditMap}
-            className="py-1.5 px-3 bg-sky-600 hover:bg-sky-500 disabled:opacity-40 text-slate-950 font-black rounded-xl text-xs uppercase tracking-wider transition-all cursor-pointer flex items-center space-x-1.5 shadow-lg shadow-sky-950/40"
-            title="Asociar y reemplazar este mapa vectorizado en otra provincia o ruta"
-          >
-            <Globe size={13} />
-            <span>Asociar a Otra Ruta</span>
-          </button>
+                {/* Exportar JSON */}
+                <button
+                  type="button"
+                  onClick={() => {
+                    setIsExtraFileMenuOpen(false);
+                    handleExportJsonFile();
+                  }}
+                  className="w-full text-left p-2 rounded-xl hover:bg-slate-900 text-slate-200 flex items-center space-x-2 transition-colors cursor-pointer"
+                >
+                  <Download size={14} className="text-amber-400" />
+                  <span>Exportar Formato .json</span>
+                </button>
+
+                <div className="border-t border-slate-800 my-1" />
+
+                {/* Recargar Vectores Nativos */}
+                <button
+                  type="button"
+                  onClick={() => {
+                    setIsExtraFileMenuOpen(false);
+                    handleReloadContextualVectors();
+                  }}
+                  className="w-full text-left p-2 rounded-xl hover:bg-slate-900 text-slate-200 flex items-center space-x-2 transition-colors cursor-pointer"
+                >
+                  <RefreshCw size={14} className="text-teal-400" />
+                  <span>Recargar Vectores Nativos</span>
+                </button>
+
+                {/* Asociar a Otra Ruta */}
+                <button
+                  type="button"
+                  onClick={() => {
+                    setIsExtraFileMenuOpen(false);
+                    setIsAssociateModalOpen(true);
+                  }}
+                  disabled={!canEditMap}
+                  className="w-full text-left p-2 rounded-xl hover:bg-slate-900 text-slate-200 flex items-center space-x-2 transition-colors disabled:opacity-40 cursor-pointer"
+                >
+                  <Globe size={14} className="text-indigo-400" />
+                  <span>Asociar a Otra Ruta o Provincia</span>
+                </button>
+
+                {/* Crear Rama Continente */}
+                <button
+                  type="button"
+                  onClick={() => {
+                    setIsExtraFileMenuOpen(false);
+                    handleGroupSelectionIntoContinent();
+                  }}
+                  disabled={!canEditMap}
+                  className="w-full text-left p-2 rounded-xl hover:bg-slate-900 text-slate-200 flex items-center space-x-2 transition-colors disabled:opacity-40 cursor-pointer"
+                >
+                  <Layers size={14} className="text-purple-400" />
+                  <span>Crear Rama Continente / Macro</span>
+                </button>
+
+                {/* Clonar para Editar (si es Pro) */}
+                {currentUser.role === 'pro' && mapEntity.ownerId === 'system' && (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setIsExtraFileMenuOpen(false);
+                      handleCloneAsProUser();
+                    }}
+                    className="w-full text-left p-2 rounded-xl hover:bg-slate-900 text-amber-300 flex items-center space-x-2 transition-colors cursor-pointer"
+                  >
+                    <Copy size={14} className="text-amber-400" />
+                    <span>Clonar para Editar (Pro)</span>
+                  </button>
+                )}
+
+                {/* Aprobar Mapa (si es Admin) */}
+                {currentUser.role === 'admin' && (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setIsExtraFileMenuOpen(false);
+                      handleApproveMapByAdmin();
+                    }}
+                    className="w-full text-left p-2 rounded-xl hover:bg-slate-900 text-emerald-300 flex items-center space-x-2 transition-colors cursor-pointer"
+                  >
+                    <ShieldCheck size={14} className="text-emerald-400" />
+                    <span>{mapEntity.isApproved ? 'Aprobado (Desmarcar)' : 'Aprobar Mapa Oficial'}</span>
+                  </button>
+                )}
+              </div>
+            )}
+          </div>
+
+          <input
+            type="file"
+            ref={fileInputRef}
+            onChange={handleFileUpload}
+            accept=".json,.svg"
+            className="hidden"
+          />
 
           {/* BOTÓN Y MENÚ DE BLINDAJE GEOGRÁFICO Y RECUPERACIÓN HISTÓRICA */}
           <div className="relative">
             <button
               type="button"
               onClick={() => setIsSafetyRecoveryMenuOpen(!isSafetyRecoveryMenuOpen)}
-              className="py-1.5 px-3 bg-indigo-950/70 hover:bg-indigo-900/90 text-indigo-300 border border-indigo-500/40 rounded-xl text-xs font-bold transition-all cursor-pointer flex items-center space-x-1.5 shadow-md shadow-indigo-950/40"
+              className="py-1.5 px-3 bg-indigo-950/70 hover:bg-indigo-900/90 text-indigo-300 border border-indigo-500/40 rounded-xl text-xs font-bold transition-all cursor-pointer flex items-center space-x-1.5 shadow-sm"
               title="Opciones de blindaje y recuperación de Tierra del Fuego, Malvinas y provincias de Argentina"
             >
               <ShieldAlert size={13} className="text-indigo-400" />
-              <span>🛡️ Blindaje Geográfico</span>
+              <span>🛡️ Blindaje</span>
             </button>
 
             {isSafetyRecoveryMenuOpen && (
@@ -4651,7 +4690,7 @@ export default function AdvancedCanvasEditor({
                       setIsSafetyRecoveryMenuOpen(false);
                       handleQuickRestoreTierraDelFuego();
                     }}
-                    className="w-full text-left p-2 rounded-xl bg-slate-900 hover:bg-slate-800 border border-emerald-900/40 hover:border-emerald-500/50 text-slate-200 text-xs transition-all flex items-center gap-2"
+                    className="w-full text-left p-2 rounded-xl bg-slate-900 hover:bg-slate-800 border border-emerald-900/40 hover:border-emerald-500/50 text-slate-200 text-xs transition-all flex items-center gap-2 cursor-pointer"
                   >
                     <span className="w-2 h-2 rounded-full bg-emerald-500"></span>
                     <div className="flex-1 min-w-0">
@@ -4667,7 +4706,7 @@ export default function AdvancedCanvasEditor({
                       setIsSafetyRecoveryMenuOpen(false);
                       handleQuickRestoreMalvinas();
                     }}
-                    className="w-full text-left p-2 rounded-xl bg-slate-900 hover:bg-slate-800 border border-sky-900/40 hover:border-sky-500/50 text-slate-200 text-xs transition-all flex items-center gap-2"
+                    className="w-full text-left p-2 rounded-xl bg-slate-900 hover:bg-slate-800 border border-sky-900/40 hover:border-sky-500/50 text-slate-200 text-xs transition-all flex items-center gap-2 cursor-pointer"
                   >
                     <span className="w-2 h-2 rounded-full bg-sky-500"></span>
                     <div className="flex-1 min-w-0">
@@ -4683,7 +4722,7 @@ export default function AdvancedCanvasEditor({
                       setIsSafetyRecoveryMenuOpen(false);
                       handleQuickRestoreFullArgentina();
                     }}
-                    className="w-full text-left p-2 rounded-xl bg-slate-900 hover:bg-slate-800 border border-indigo-900/40 hover:border-indigo-500/50 text-slate-200 text-xs transition-all flex items-center gap-2"
+                    className="w-full text-left p-2 rounded-xl bg-slate-900 hover:bg-slate-800 border border-indigo-900/40 hover:border-indigo-500/50 text-slate-200 text-xs transition-all flex items-center gap-2 cursor-pointer"
                   >
                     <span className="w-2 h-2 rounded-full bg-indigo-500"></span>
                     <div className="flex-1 min-w-0">
@@ -4696,7 +4735,7 @@ export default function AdvancedCanvasEditor({
             )}
           </div>
 
-          {/* BOTONES PARA ESCONDER / OCULTAR PANELES LATERALES (RESALTADOS EN ROJO POR EL USUARIO) */}
+          {/* BOTONES PARA ESCONDER / OCULTAR PANELES LATERALES */}
           <div className="flex items-center space-x-1 border-l border-slate-800 pl-2">
             <button
               onClick={() => setShowLeftSidebar(!showLeftSidebar)}
@@ -4708,7 +4747,7 @@ export default function AdvancedCanvasEditor({
               title={showLeftSidebar ? "Esconder Panel Izquierdo (Capas/Polígonos)" : "Mostrar Panel Izquierdo (Capas/Polígonos)"}
             >
               {showLeftSidebar ? <PanelLeftClose size={13} /> : <PanelLeftOpen size={13} />}
-              <span className="hidden xl:inline">{showLeftSidebar ? 'Ocultar Capas' : 'Ver Capas'}</span>
+              <span className="hidden xl:inline">{showLeftSidebar ? 'Ocultar Capas' : 'Capas'}</span>
             </button>
 
             <button
@@ -4721,7 +4760,7 @@ export default function AdvancedCanvasEditor({
               title={showRightSidebar ? "Esconder Panel Derecho (Transformación/Inspector)" : "Mostrar Panel Derecho (Transformación/Inspector)"}
             >
               {showRightSidebar ? <PanelRightClose size={13} /> : <PanelRightOpen size={13} />}
-              <span className="hidden xl:inline">{showRightSidebar ? 'Ocultar Inspector' : 'Ver Inspector'}</span>
+              <span className="hidden xl:inline">{showRightSidebar ? 'Ocultar Inspector' : 'Inspector'}</span>
             </button>
           </div>
         </div>

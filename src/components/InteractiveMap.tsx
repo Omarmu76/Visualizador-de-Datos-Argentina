@@ -287,6 +287,7 @@ export default function InteractiveMap({
 
   // ESTADOS Y CÁLCULOS PARA EL NAVEGADOR INTELIGENTE DE RUTA Y SELECCIÓN CON SUBMENÚS Y LUPITA IA
   const [isRouteMenuOpen, setIsRouteMenuOpen] = useState(false); // Estado para abrir o cerrar el submenú flotante
+  const [isFloatingWidgetCollapsed, setIsFloatingWidgetCollapsed] = useState(false); // Permite minimizar el widget flotante para despejar la vista del mapa
   const [routeSearchQuery, setRouteSearchQuery] = useState(''); // Estado para la búsqueda interactiva con IA y Lupita
   const [activeRouteSubmenu, setActiveRouteSubmenu] = useState<'all' | 'macro' | 'provinces' | 'municipalities'>('all'); // Pestaña/Filtro del submenú
   const [expandedSubcategory, setExpandedSubcategory] = useState<string | null>('provinces'); // Submenú colapsable activo
@@ -991,109 +992,77 @@ export default function InteractiveMap({
 
   return (
     <div id="interactive-map-container" className="flex flex-col h-full space-y-4">
-      {/* Selector de Métrica y Modo de Categorías Grandes */}
-      <div id="map-controls" className="bg-slate-900/40 rounded-xl border border-slate-800 p-4 shadow-sm">
-        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
-          <div>
-            <label className="text-[10px] font-bold text-slate-500 uppercase tracking-widest block mb-1">
-              Ver Datos Por:
-            </label>
-            <select
-              id="metric-select"
-              value={selectedMetric}
-              onChange={(e) => onChangeMetric(e.target.value as MetricType)}
-              className="w-full sm:w-64 bg-slate-950 border border-slate-800 text-slate-200 text-sm rounded p-2 outline-none font-medium transition-all focus:border-emerald-500"
-            >
-              {Object.entries(metricLabels).map(([key, value]) => (
-                <option key={key} value={key}>
-                  {value}
-                </option>
-              ))}
-            </select>
-          </div>
+      {/* Selector de Métrica y Barra de Herramientas Principal de Navegación */}
+      <div id="map-controls" className="bg-slate-900/60 rounded-2xl border border-slate-800/80 p-3 shadow-md backdrop-blur-sm">
+        <div className="flex flex-col xl:flex-row xl:items-center justify-between gap-2.5">
+          {/* Lado Izquierdo: Selector de Datos y Filtro */}
+          <div className="flex items-center space-x-2.5">
+            <div className="relative flex items-center">
+              <span className="text-[10px] font-black text-slate-400 uppercase tracking-wider mr-2 hidden sm:inline">
+                Datos:
+              </span>
+              <select
+                id="metric-select"
+                value={selectedMetric}
+                onChange={(e) => onChangeMetric(e.target.value as MetricType)}
+                className="bg-slate-950 border border-slate-700/80 text-slate-100 text-xs rounded-xl px-3 py-1.5 font-bold outline-none transition-all focus:border-emerald-500 hover:border-slate-600 shadow-inner"
+              >
+                {Object.entries(metricLabels).map(([key, value]) => (
+                  <option key={key} value={key}>
+                    {value}
+                  </option>
+                ))}
+              </select>
+            </div>
 
-          <div className="flex flex-wrap items-center gap-2">
             {/* Botón para alternar el menú de Categorías Grandes Principales */}
             <button
               onClick={() => setShowCategoryGrid(!showCategoryGrid)}
-              className={`flex items-center space-x-1.5 px-3 py-2 text-xs font-bold rounded border transition-all cursor-pointer ${
+              className={`flex items-center space-x-1.5 px-2.5 py-1.5 text-xs font-bold rounded-xl border transition-all cursor-pointer ${
                 showCategoryGrid || isAtRoot
-                  ? 'bg-emerald-500/10 border-emerald-500 text-emerald-400'
-                  : 'bg-slate-950 border-slate-800 text-slate-300 hover:text-emerald-400'
+                  ? 'bg-emerald-500/20 border-emerald-500/60 text-emerald-300 shadow-sm'
+                  : 'bg-slate-950 border-slate-800 text-slate-300 hover:text-emerald-400 hover:border-slate-700'
               }`}
-              title="Explorar Categorías Grandes"
+              title="Explorar Categorías Grandes de Mapas y Vectores"
             >
-              <Grid size={16} />
+              <Grid size={14} className={showCategoryGrid || isAtRoot ? "text-emerald-400" : "text-slate-400"} />
               <span>Categorías</span>
             </button>
+          </div>
 
-            {/* CONTROLES AVANZADOS DE ZOOM CON % EDITABLE, SLIDER DESPLAZABLE Y AJUSTE VISUAL FIT */}
-            <div className="flex items-center flex-wrap gap-1 bg-slate-950 border border-slate-800 rounded-lg p-1">
-              {/* SELECTOR / SWITCH DE AUTO-AJUSTE vs BLOQUEO DE REDIMENSIÓN */}
-              <label
-                className={`flex items-center space-x-1.5 px-2 py-1 rounded-md border text-[10.5px] font-bold cursor-pointer select-none transition-all ${
-                  isResizeLocked
-                    ? 'bg-amber-500/20 text-amber-300 border-amber-500/50 shadow-sm'
-                    : 'bg-emerald-500/15 text-emerald-300 border-emerald-500/40 hover:bg-emerald-500/25'
-                }`}
-                title={
-                  isResizeLocked
-                    ? 'Bloqueo de Tamaño Activado: Al arrastrar los paneles, el mapa mantiene su escala fija actual.'
-                    : 'Auto-Ajuste Responsivo: El mapa se redimensiona automáticamente al ajustar los paneles para verse siempre completo.'
-                }
-              >
-                <input
-                  type="checkbox"
-                  checked={isResizeLocked}
-                  onChange={(e) => toggleLockResize(e.target.checked)}
-                  className="accent-amber-500 w-3 h-3 cursor-pointer rounded"
-                />
-                <span className="flex items-center space-x-1">
-                  {isResizeLocked ? (
-                    <>
-                      <Lock size={12} className="text-amber-400" />
-                      <span>Bloquear Tamaño</span>
-                    </>
-                  ) : (
-                    <>
-                      <Unlock size={12} className="text-emerald-400" />
-                      <span>Auto-Ajuste</span>
-                    </>
-                  )}
-                </span>
-              </label>
-
-              <div className="w-px h-4 bg-slate-800 mx-0.5" />
-
-              {/* BOTÓN HERRAMIENTA MANITO (DESPLAZAR / ARRASTRAR MAPA LIBREMENTE) */}
+          {/* Lado Derecho: Barra de Navegación, Zoom, Ajuste y Paleta */}
+          <div className="flex flex-wrap items-center gap-1.5">
+            {/* HERRAMIENTAS DE ZOOM Y NAVEGACIÓN AGRUPADAS */}
+            <div className="flex items-center bg-slate-950 border border-slate-800 rounded-xl p-0.5 space-x-0.5 shadow-inner">
+              {/* BOTÓN HERRAMIENTA MANITO */}
               <button
                 onClick={() => setIsPanToolActive(!isPanToolActive)}
-                className={`p-1.5 rounded transition-all cursor-pointer flex items-center space-x-1 ${
+                className={`p-1.5 rounded-lg transition-all cursor-pointer flex items-center space-x-1 ${
                   isPanToolActive
-                    ? 'bg-emerald-500 text-slate-950 font-bold border border-emerald-400 shadow-[0_0_12px_rgba(16,185,129,0.7)]'
-                    : 'hover:bg-slate-900 border border-transparent hover:border-slate-800 text-slate-300 hover:text-emerald-400'
+                    ? 'bg-emerald-500 text-slate-950 font-black shadow-[0_0_10px_rgba(16,185,129,0.5)]'
+                    : 'hover:bg-slate-900 text-slate-300 hover:text-emerald-400'
                 }`}
-                title={isPanToolActive ? "Desactivar Herramienta Manito" : "Activar Herramienta Manito (Mover y Arrastrar Mapa o Dibujo Libremente)"}
+                title={isPanToolActive ? "Desactivar Herramienta Manito" : "Activar Herramienta Manito (Desplazar y Arrastrar Mapa Libremente)"}
               >
-                <Hand size={16} />
-                <span className="text-[10px] font-bold hidden md:inline">
-                  {isPanToolActive ? 'Manito ON' : 'Manito'}
+                <Hand size={14} />
+                <span className="text-[10px] font-bold hidden sm:inline">
+                  {isPanToolActive ? 'Manito' : 'Mover'}
                 </span>
               </button>
 
-              <div className="w-px h-4 bg-slate-800 mx-0.5" />
+              <div className="w-px h-3.5 bg-slate-800 mx-0.5" />
 
               {/* Botón Alejar Zoom */}
               <button
                 onClick={() => handleZoom('out')}
-                className="p-1.5 hover:bg-slate-900 border border-transparent hover:border-slate-800 text-slate-300 rounded transition-colors cursor-pointer hover:text-emerald-400"
-                title="Alejar Zoom"
+                className="p-1.5 hover:bg-slate-900 text-slate-300 rounded-lg transition-colors cursor-pointer hover:text-emerald-400"
+                title="Alejar Zoom (-)"
               >
-                <ZoomOut size={16} />
+                <ZoomOut size={14} />
               </button>
 
               {/* Porcentaje de Zoom Editable (%) */}
-              <div className="flex items-center bg-slate-900 border border-slate-800 rounded px-1.5 py-0.5">
+              <div className="flex items-center bg-slate-900 border border-slate-800/80 rounded-md px-1 py-0.5">
                 <input
                   type="text"
                   value={`${Math.round(zoomLevel * 100)}%`}
@@ -1104,7 +1073,7 @@ export default function InteractiveMap({
                       setZoomLevel(numVal / 100);
                     }
                   }}
-                  className="w-12 text-center bg-transparent text-xs font-bold text-emerald-400 font-mono outline-none"
+                  className="w-11 text-center bg-transparent text-[11px] font-black text-emerald-400 font-mono outline-none"
                   title="Escribe un porcentaje de zoom personalizado (ej: 150%)"
                 />
               </div>
@@ -1112,41 +1081,28 @@ export default function InteractiveMap({
               {/* Botón Acercar Zoom */}
               <button
                 onClick={() => handleZoom('in')}
-                className="p-1.5 hover:bg-slate-900 border border-transparent hover:border-slate-800 text-slate-300 rounded transition-colors cursor-pointer hover:text-emerald-400"
-                title="Acercar Zoom"
+                className="p-1.5 hover:bg-slate-900 text-slate-300 rounded-lg transition-colors cursor-pointer hover:text-emerald-400"
+                title="Acercar Zoom (+)"
               >
-                <ZoomIn size={16} />
+                <ZoomIn size={14} />
               </button>
 
-              {/* BARRA DE DESPLAZAMIENTO (SLIDER EXTRA) PARA MOVER CON MOUSE SIN LÍMITE */}
-              <input
-                type="range"
-                min="10"
-                max="1000"
-                step="5"
-                value={Math.round(zoomLevel * 100)}
-                onChange={(e) => {
-                  const newPct = parseFloat(e.target.value);
-                  setZoomLevel(newPct / 100);
-                }}
-                className="w-16 sm:w-20 h-1.5 bg-slate-800 rounded-lg appearance-none cursor-pointer accent-emerald-500"
-                title="Desliza para acercar o alejar el zoom sin límites"
-              />
+              <div className="w-px h-3.5 bg-slate-800 mx-0.5" />
 
-              {/* BOTÓN DE AJUSTE VISUAL FIT (SEGÚN LA PANTALLA Y SELECCIÓN) */}
+              {/* BOTÓN DE AJUSTE VISUAL FIT (CENTRAR Y ENCUADRAR) */}
               <button
                 onClick={() => {
                   setZoomLevel(1);
                   setPanOffset({ x: 0, y: 0 });
                 }}
-                className="p-1.5 bg-emerald-500/10 hover:bg-emerald-500/20 border border-emerald-500/30 text-emerald-400 rounded transition-colors cursor-pointer flex items-center space-x-1"
-                title="Ajustar Visual: Centrar y adaptar encuadre a la pantalla"
+                className="px-2 py-1 bg-emerald-500/10 hover:bg-emerald-500/20 text-emerald-400 rounded-lg transition-colors cursor-pointer flex items-center space-x-1 text-[11px] font-bold"
+                title="Ajustar Visual: Centrar y encuadrar mapa en la pantalla"
               >
-                <Maximize2 size={14} />
-                <span className="text-[10px] font-bold hidden xl:inline">Fit</span>
+                <Maximize2 size={12} />
+                <span>Fit</span>
               </button>
 
-              {/* BOTÓN FOCUS SELECCIÓN (CENTRAR ZOOM EN TERRITORIO SELECCIONADO) */}
+              {/* BOTÓN FOCUS SELECCIÓN */}
               {(selectedProvince || selectedSubdivisionId) && (
                 <button
                   onClick={() => {
@@ -1158,15 +1114,15 @@ export default function InteractiveMap({
                       }
                     }
                   }}
-                  className="p-1.5 bg-emerald-500/20 hover:bg-emerald-500/30 border border-emerald-500/40 text-emerald-300 rounded transition-colors cursor-pointer flex items-center space-x-1 animate-fade-in"
+                  className="px-2 py-1 bg-emerald-500/20 hover:bg-emerald-500/30 text-emerald-300 rounded-lg transition-colors cursor-pointer flex items-center space-x-1 text-[11px] font-bold animate-fade-in"
                   title="Centrar el zoom en el territorio o región seleccionada"
                 >
-                  <Target size={14} className="text-emerald-400" />
-                  <span className="text-[10px] font-bold hidden xl:inline">Focus</span>
+                  <Target size={12} className="text-emerald-400" />
+                  <span>Foco</span>
                 </button>
               )}
 
-              {/* BOTÓN DESELECCIONAR (LIMPIAR LA SELECCIÓN DEL MAPA) */}
+              {/* BOTÓN DESELECCIONAR */}
               {(selectedSubdivisionId || (selectedProvince && selectedProvince.id !== 'AR' && selectedProvince.id !== 'COUNTRY_MAP')) && (
                 <button
                   onClick={() => {
@@ -1174,35 +1130,69 @@ export default function InteractiveMap({
                     setZoomLevel(1);
                     setPanOffset({ x: 0, y: 0 });
                   }}
-                  className="p-1.5 bg-slate-800 hover:bg-slate-700 border border-slate-700 text-slate-300 rounded transition-colors cursor-pointer flex items-center space-x-1 animate-fade-in"
+                  className="px-2 py-1 bg-slate-900 hover:bg-slate-800 text-slate-300 rounded-lg transition-colors cursor-pointer flex items-center space-x-1 text-[11px] font-medium animate-fade-in"
                   title="Deseleccionar territorio y restablecer vista completa"
                 >
-                  <X size={14} className="text-slate-400" />
-                  <span className="text-[10px] font-bold hidden xl:inline">Deseleccionar</span>
-                </button>
-              )}
-
-              {/* BOTÓN DE RECUPERACIÓN PURA DE MAPA MUNDIAL */}
-              {(activeMapLevel === 'world' || activeMapLevel === 'mundo' || selectedProvince?.id === 'WORLD_MAP') && onRestoreWorldMap && (
-                <button
-                  onClick={onRestoreWorldMap}
-                  className="p-1.5 bg-amber-500/20 hover:bg-amber-500/30 border border-amber-500/40 text-amber-300 rounded transition-colors cursor-pointer flex items-center space-x-1 animate-fade-in"
-                  title="Restaurar el mapa mundial original con todos sus países (sin alterar Argentina)"
-                >
-                  <RotateCcw size={14} className="text-amber-400" />
-                  <span className="text-[10px] font-bold">↺ Recuperar Mundo</span>
+                  <X size={12} className="text-slate-400" />
+                  <span className="hidden sm:inline">Limpiar</span>
                 </button>
               )}
             </div>
 
+            {/* SWITCH DE AUTO-AJUSTE vs BLOQUEO */}
+            <label
+              className={`flex items-center space-x-1 px-2 py-1.5 rounded-xl border text-[11px] font-bold cursor-pointer select-none transition-all ${
+                isResizeLocked
+                  ? 'bg-amber-500/15 text-amber-300 border-amber-500/40 shadow-xs'
+                  : 'bg-slate-950 text-slate-300 border-slate-800 hover:border-slate-700'
+              }`}
+              title={
+                isResizeLocked
+                  ? 'Bloqueo de Tamaño Activado: Al arrastrar los paneles, el mapa mantiene su escala fija actual.'
+                  : 'Auto-Ajuste Responsivo: El mapa se redimensiona automáticamente al ajustar los paneles para verse siempre completo.'
+              }
+            >
+              <input
+                type="checkbox"
+                checked={isResizeLocked}
+                onChange={(e) => toggleLockResize(e.target.checked)}
+                className="accent-amber-500 w-3 h-3 cursor-pointer rounded"
+              />
+              <span className="flex items-center space-x-1">
+                {isResizeLocked ? (
+                  <>
+                    <Lock size={12} className="text-amber-400" />
+                    <span className="hidden sm:inline">Fijo</span>
+                  </>
+                ) : (
+                  <>
+                    <Unlock size={12} className="text-emerald-400" />
+                    <span className="hidden sm:inline">Auto</span>
+                  </>
+                )}
+              </span>
+            </label>
+
+            {/* BOTÓN DE RECUPERACIÓN PURA DE MAPA MUNDIAL */}
+            {(activeMapLevel === 'world' || activeMapLevel === 'mundo' || selectedProvince?.id === 'WORLD_MAP') && onRestoreWorldMap && (
+              <button
+                onClick={onRestoreWorldMap}
+                className="p-1.5 px-2.5 bg-amber-500/15 hover:bg-amber-500/25 border border-amber-500/40 text-amber-300 rounded-xl text-xs font-bold transition-colors cursor-pointer flex items-center space-x-1 animate-fade-in"
+                title="Restaurar el mapa mundial original con todos sus países (sin alterar Argentina)"
+              >
+                <RotateCcw size={12} className="text-amber-400" />
+                <span>Recuperar Mundo</span>
+              </button>
+            )}
+
             {/* Botón para Configuración de Paleta & Dashboards Dinámicos */}
             <button
               onClick={() => setShowAdminModal(!showAdminModal)}
-              className="flex items-center space-x-1.5 px-3 py-2 text-xs font-bold bg-slate-950 hover:bg-slate-900 border border-slate-800 text-emerald-400 rounded transition-colors cursor-pointer"
+              className="flex items-center space-x-1.5 px-3 py-1.5 text-xs font-bold bg-slate-950 hover:bg-slate-900 border border-slate-800 text-emerald-400 rounded-xl transition-all cursor-pointer shadow-xs"
               title="Configurar Paleta & Dashboards"
             >
-              <Sliders size={16} />
-              <span className="hidden md:inline">Paleta & Dashboards</span>
+              <Sliders size={14} />
+              <span className="hidden md:inline">Paleta & Temas</span>
             </button>
           </div>
         </div>
@@ -1406,29 +1396,55 @@ export default function InteractiveMap({
           className="relative flex-1 min-h-[440px] lg:min-h-[580px] w-full bg-slate-950 rounded-xl border border-slate-800 overflow-hidden flex items-center justify-center p-3 transition-all duration-150"
         >
         {/* Selector de Nivel y Elementos del Mapa Desplegable (Índice de Ruta Estructurado con Submenús y Buscador Inteligente IA) */}
-        <div id="dropdown-route-index" className="absolute top-4 left-4 z-40 flex flex-col space-y-1.5 min-w-[260px] max-w-[340px] pointer-events-auto">
-          {/* Botón Disparador del Menú Emergente */}
-          <button
-            onClick={() => setIsRouteMenuOpen(!isRouteMenuOpen)}
-            className="w-full bg-slate-900/95 hover:bg-slate-900 border border-slate-700/80 hover:border-emerald-500/80 p-2.5 rounded-xl shadow-2xl backdrop-blur-md flex items-center justify-between transition-all cursor-pointer group text-left"
-            title="Abrir Menú de Ruta y Búsqueda Inteligente"
-          >
-            <div className="flex flex-col truncate pr-2">
-              <span className="text-[8.5px] font-extrabold text-slate-500 uppercase tracking-widest flex items-center gap-1 mb-0.5">
-                <span>Índice de Ruta / Selección</span>
-                <span className="text-[7.5px] bg-emerald-500/20 text-emerald-400 px-1 py-0.2 rounded font-mono">IA</span>
-              </span>
-              <span className="text-xs font-bold text-emerald-300 truncate group-hover:text-emerald-200">
-                {currentSelectionLabel}
-              </span>
+        <div id="dropdown-route-index" className="absolute top-4 left-4 z-40 flex flex-col space-y-1.5 min-w-[240px] max-w-[340px] pointer-events-auto">
+          {/* Botón Disparador del Menú Emergente o Píldora Minimizada */}
+          {isFloatingWidgetCollapsed ? (
+            <button
+              onClick={() => setIsFloatingWidgetCollapsed(false)}
+              className="bg-slate-900/90 hover:bg-slate-900 border border-slate-700/80 hover:border-emerald-500/80 px-3 py-1.5 rounded-full shadow-lg backdrop-blur-md flex items-center space-x-2 transition-all cursor-pointer group text-left text-xs font-bold text-slate-300 hover:text-emerald-300"
+              title="Expandir panel de ruta y selección"
+            >
+              <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse"></span>
+              <span className="truncate max-w-[180px]">{currentSelectionLabel}</span>
+              <ChevronDown size={14} className="text-slate-400 group-hover:text-emerald-400 ml-1" />
+            </button>
+          ) : (
+            <div className="flex items-center space-x-1 w-full">
+              <button
+                onClick={() => setIsRouteMenuOpen(!isRouteMenuOpen)}
+                className="flex-1 bg-slate-900/95 hover:bg-slate-900 border border-slate-700/80 hover:border-emerald-500/80 p-2.5 rounded-xl shadow-2xl backdrop-blur-md flex items-center justify-between transition-all cursor-pointer group text-left"
+                title="Abrir Menú de Ruta y Búsqueda Inteligente"
+              >
+                <div className="flex flex-col truncate pr-2">
+                  <span className="text-[8.5px] font-extrabold text-slate-500 uppercase tracking-widest flex items-center gap-1 mb-0.5">
+                    <span>Índice de Ruta / Selección</span>
+                    <span className="text-[7.5px] bg-emerald-500/20 text-emerald-400 px-1 py-0.2 rounded font-mono">IA</span>
+                  </span>
+                  <span className="text-xs font-bold text-emerald-300 truncate group-hover:text-emerald-200">
+                    {currentSelectionLabel}
+                  </span>
+                </div>
+                <div className="flex items-center space-x-1 shrink-0">
+                  <div className="p-1 bg-slate-800 rounded-lg text-slate-400 group-hover:text-emerald-400 transition-colors">
+                    <Search size={12} />
+                  </div>
+                  {isRouteMenuOpen ? <ChevronUp size={14} className="text-emerald-400" /> : <ChevronDown size={14} className="text-slate-400" />}
+                </div>
+              </button>
+
+              {/* Botón para Minimizar/Ocultar el Widget */}
+              <button
+                onClick={() => {
+                  setIsFloatingWidgetCollapsed(true);
+                  setIsRouteMenuOpen(false);
+                }}
+                className="p-2.5 bg-slate-900/95 hover:bg-slate-800 border border-slate-700/80 hover:border-slate-600 rounded-xl text-slate-400 hover:text-slate-200 transition-all cursor-pointer shadow-lg backdrop-blur-md"
+                title="Minimizar panel flotante para despejar la vista del mapa"
+              >
+                <ChevronUp size={14} />
+              </button>
             </div>
-            <div className="flex items-center space-x-1 shrink-0">
-              <div className="p-1 bg-slate-800 rounded-lg text-slate-400 group-hover:text-emerald-400 transition-colors">
-                <Search size={12} />
-              </div>
-              {isRouteMenuOpen ? <ChevronUp size={14} className="text-emerald-400" /> : <ChevronDown size={14} className="text-slate-400" />}
-            </div>
-          </button>
+          )}
 
           {/* Menú Emergente Desplegable con Submenús y Buscador Inteligente con IA */}
           <AnimatePresence>
